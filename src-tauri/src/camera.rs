@@ -30,6 +30,30 @@ pub struct StreamCapSlot {
     pub range_max_height: i32,
 }
 
+/// COM init success codes: `S_OK` (0) and `S_FALSE` (1, already initialized).
+pub fn is_com_init_success(hr: i32) -> bool {
+    const S_OK: i32 = 0;
+    const S_FALSE: i32 = 1;
+    hr == S_OK || hr == S_FALSE
+}
+
+/// Discrete FOURCC usable for later open-by-fourcc.
+///
+/// Empty/unknown subtype GUIDs and RGB-style `"auto"` rows are skipped so the
+/// table only lists modes that can be opened by FOURCC. Python `dshow_enum.py`
+/// maps those to `"auto"` and keeps them; we drop them on purpose.
+pub fn discrete_fourcc(label: &str) -> Option<String> {
+    if label.trim().is_empty() {
+        return None;
+    }
+    let fourcc = normalize_fourcc(label);
+    if fourcc == "auto" {
+        None
+    } else {
+        Some(fourcc)
+    }
+}
+
 /// Matches `dshow_enum.py` `_normalize_fourcc`.
 pub fn normalize_fourcc(label: &str) -> String {
     let text = label.trim().to_ascii_uppercase();
@@ -84,7 +108,9 @@ pub fn collect_discrete_modes(slots: &[StreamCapSlot]) -> Vec<(i32, i32, String)
         if width <= 0 || height <= 0 {
             continue;
         }
-        let fourcc = normalize_fourcc(&slot.subtype_label);
+        let Some(fourcc) = discrete_fourcc(&slot.subtype_label) else {
+            continue;
+        };
         let key = (width, height, fourcc);
         if seen.contains(&key) {
             continue;
@@ -133,7 +159,7 @@ unsafe fn list_dshow_modes_com() -> Result<Vec<CameraMode>, String> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 
     let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    if hr.is_err() {
+    if !is_com_init_success(hr.0) {
         return Err(format!("CoInitializeEx: {hr:?}"));
     }
     let result = enumerate_video_devices();

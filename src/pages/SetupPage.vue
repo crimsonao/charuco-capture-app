@@ -86,7 +86,7 @@ onMounted(() => {
       </button>
     </div>
 
-    <p v-if="isLoading" class="setup__status">正在枚举 DirectShow 相机…</p>
+    <p v-if="isLoading" class="setup__status">正在枚举 DirectShow 相机...</p>
     <p v-else-if="errorMessage" class="setup__status setup__status--error">{{ errorMessage }}</p>
     <p v-else-if="modes.length === 0" class="setup__status">
       未检测到相机，请关闭 Windows 相机应用后重试。
@@ -116,7 +116,7 @@ onMounted(() => {
           >
             <td>{{ mode.device_name }}</td>
             <td>{{ mode.dshow_index }}</td>
-            <td>{{ mode.width }}×{{ mode.height }}</td>
+            <td>{{ mode.width }}x{{ mode.height }}</td>
             <td>{{ mode.fourcc }}</td>
           </tr>
         </tbody>
