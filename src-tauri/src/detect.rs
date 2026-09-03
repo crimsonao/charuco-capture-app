@@ -95,6 +95,15 @@ pub fn make_board(square_m: f32, marker_m: f32) -> Result<CharucoBoard, String> 
     Ok(CharucoBoard { ptr })
 }
 
+/// Create a board from millimetre setup fields (`square_mm` / `marker_mm`).
+pub fn make_board_from_mm(square_mm: f64, marker_mm: f64) -> Result<CharucoBoard, String> {
+    if square_mm <= 0.0 || marker_mm <= 0.0 || marker_mm >= square_mm {
+        return Err("无法创建标定板：Marker 必须小于棋格边长".into());
+    }
+    make_board((square_mm / 1000.0) as f32, (marker_mm / 1000.0) as f32)
+        .map_err(|err| format!("无法创建标定板：{err}"))
+}
+
 pub fn has_enough_corners(detected: &Detected) -> bool {
     detected.corners.len() >= MIN_CORNERS
 }

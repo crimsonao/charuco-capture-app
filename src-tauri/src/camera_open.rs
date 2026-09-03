@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter};
 use crate::calib::session_score_of_shots;
 use crate::camera::normalize_fourcc;
 use crate::capture_flow::{CaptureFlow, CapturePhase, SessionDone};
-use crate::detect::{draw_detected, frame_hint, make_board};
+use crate::detect::{draw_detected, frame_hint, make_board_from_mm};
 use crate::jpeg::encode_jpeg_bytes;
 use crate::session::{resolve_out_root, SessionConfig};
 
@@ -132,6 +132,15 @@ impl SessionParams {
             resolve_out_root(self.out_root.as_deref()),
         )
     }
+}
+
+/// Validate board millimetres (and OpenCV create) before opening a camera.
+pub fn prepare_preview_session(session: Option<SessionParams>) -> Result<SessionConfig, String> {
+    let config = session
+        .map(SessionParams::into_config)
+        .unwrap_or_else(SessionConfig::default_capture);
+    let _board = make_board_from_mm(config.square_mm, config.marker_mm)?;
+    Ok(config)
 }
 
 struct PreviewSession {
@@ -475,11 +484,26 @@ fn run_preview_loop(
     stop: std::sync::Arc<AtomicBool>,
     config: SessionConfig,
 ) {
-    let board = make_board(
-        (config.square_mm / 1000.0) as f32,
-        (config.marker_mm / 1000.0) as f32,
-    )
-    .ok();
+    let board = match make_board_from_mm(config.square_mm, config.marker_mm) {
+        Ok(board) => board,
+        Err(err) => {
+            let _ = app.emit(
+                "frame",
+                FrameEvent {
+                    jpeg_base64: String::new(),
+                    hint: err,
+                    n_corners: 0,
+                    corners: Vec::new(),
+                    image_count: 0,
+                    count_target: config.count_target,
+                    phase: "collecting".into(),
+                    average_percent: 0.0,
+                    mean_reprojection_error: None,
+                },
+            );
+            return;
+        }
+    };
     let mut flow = CaptureFlow::start(config);
     let mut last_emit = Instant::now()
         .checked_sub(PREVIEW_INTERVAL)
@@ -508,45 +532,45 @@ fn run_preview_loop(
         let mut corners = Vec::new();
         let mut hint = frame_hint(0);
         let mut done: Option<SessionDone> = None;
-        if let Some(board) = board.as_ref() {
-            if let Some(detected) = crate::capture_flow::detect_or_none(
-                &frame.data,
-                frame.width,
-                frame.height,
-                frame.channels,
-                board,
-            ) {
-                n_corners = detected.corners.len();
-                corners = detected.corners.clone();
-                if !detected.corners.is_empty() {
-                    let (next_hint, next_done) = flow.process_detected(
-                        &frame.data,
-                        frame.width,
-                        frame.height,
-                        frame.channels,
-                        &detected,
-                        board,
-                        now,
-                    );
-                    hint = next_hint;
-                    done = next_done;
-                }
-                let _ = draw_detected(
-                    &mut frame.data,
+        if let Some(detected) = crate::capture_flow::detect_or_none(
+            &frame.data,
+            frame.width,
+            frame.height,
+            frame.channels,
+            &board,
+        ) {
+            n_corners = detected.corners.len();
+            corners = detected.corners.clone();
+            if !detected.corners.is_empty() {
+                let (next_hint, next_done) = flow.process_detected(
+                    &frame.data,
                     frame.width,
                     frame.height,
                     frame.channels,
                     &detected,
+                    &board,
+                    now,
                 );
+                hint = next_hint;
+                done = next_done;
             }
+            let _ = draw_detected(
+                &mut frame.data,
+                frame.width,
+                frame.height,
+                frame.channels,
+                &detected,
+            );
         }
 
         if let Some(save_hint) = flow.hint_prefix() {
-            hint = if hint == frame_hint(0) {
-                save_hint
-            } else {
-                format!("{save_hint}  {hint}")
-            };
+            if !hint.starts_with(&save_hint) {
+                hint = if hint == frame_hint(0) {
+                    save_hint
+                } else {
+                    format!("{save_hint}  {hint}")
+                };
+            }
         }
 
         let Ok(jpeg_base64) = encode_jpeg_base64(&frame) else {
@@ -657,9 +681,7 @@ pub async fn start_preview(
     req: OpenRequest,
     session: Option<SessionParams>,
 ) -> Result<(i32, i32, String), String> {
-    let config = session
-        .map(SessionParams::into_config)
-        .unwrap_or_else(SessionConfig::default_capture);
+    let config = prepare_preview_session(session)?;
     tauri::async_runtime::spawn_blocking(move || start_preview_blocking(app, req, config))
         .await
         .map_err(|err| format!("start_preview join: {err}"))?

@@ -119,7 +119,7 @@ pub fn start_session_dir_named(root: &Path, stamp: &str) -> Result<PathBuf, Stri
 
 /// User-visible hint when autosave cannot run because the session directory failed to open.
 pub fn session_save_error_hint(err: &str) -> String {
-    format!("无法保存：{err}")
+    format!("无法保存：{err}。请检查目录权限")
 }
 
 /// Absolute path for `session.json` `images[].path` (matches Python `str(session.out_dir / name)`).

@@ -54,7 +54,15 @@ const selectedMode = computed(() => {
   return modes.value.find((mode) => modeKey(mode) === selectedKey.value) ?? null;
 });
 
-const canStartCapture = computed(() => selectedMode.value !== null);
+const boardParamsValid = computed(() => {
+  const square = Number(squareMm.value);
+  const marker = Number(markerMm.value);
+  return square > 0 && marker > 0 && marker < square;
+});
+
+const canStartCapture = computed(
+  () => selectedMode.value !== null && boardParamsValid.value,
+);
 
 async function loadCameras(): Promise<void> {
   isLoading.value = true;
@@ -85,6 +93,11 @@ function handleStartCapture(): void {
   if (selectedMode.value === null) {
     return;
   }
+  if (!boardParamsValid.value) {
+    errorMessage.value = '无法创建标定板：Marker 必须小于棋格边长';
+    return;
+  }
+  errorMessage.value = '';
   const count = Math.max(3, Math.round(Number(countTarget.value) || 15));
   countTarget.value = count;
   emit('start-capture', {
@@ -158,6 +171,9 @@ onMounted(() => {
     </div>
 
     <p v-if="isLoading" class="setup__status">正在枚举 DirectShow 相机...</p>
+    <p v-else-if="!boardParamsValid" class="setup__status setup__status--error">
+      Marker 必须小于棋格边长
+    </p>
     <p v-else-if="errorMessage" class="setup__status setup__status--error">{{ errorMessage }}</p>
     <p v-else-if="modes.length === 0" class="setup__status">
       未检测到相机，请关闭 Windows 相机应用后重试。

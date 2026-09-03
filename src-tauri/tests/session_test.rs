@@ -86,6 +86,7 @@ fn session_save_error_hint_prefixes_user_message() {
     let hint = session_save_error_hint("create session dir: permission denied");
     assert!(hint.starts_with("无法保存："), "{hint}");
     assert!(hint.contains("permission denied"), "{hint}");
+    assert!(hint.contains("检查目录权限"), "{hint}");
 }
 
 #[test]

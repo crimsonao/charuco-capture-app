@@ -15,6 +15,18 @@ fn make_board_rejects_invalid_sizes() {
 }
 
 #[test]
+fn make_board_from_mm_rejects_marker_not_smaller_than_square() {
+    let err = match charuco_capture_app_lib::detect::make_board_from_mm(20.0, 20.0) {
+        Err(err) => err,
+        Ok(_) => panic!("marker == square must fail"),
+    };
+    assert!(err.contains("无法创建标定板"), "{err}");
+    assert!(err.contains("Marker"), "{err}");
+    assert!(charuco_capture_app_lib::detect::make_board_from_mm(15.0, 20.0).is_err());
+    assert!(charuco_capture_app_lib::detect::make_board_from_mm(20.0, 15.0).is_ok());
+}
+
+#[test]
 fn blank_image_has_no_board() {
     let board = default_board();
     let width = 320;

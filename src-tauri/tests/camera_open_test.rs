@@ -123,3 +123,26 @@ fn camera_disconnect_hint_is_user_visible() {
     use charuco_capture_app_lib::camera_open::CAMERA_DISCONNECT_HINT;
     assert_eq!(CAMERA_DISCONNECT_HINT, "摄像头断开");
 }
+
+#[test]
+fn prepare_preview_session_rejects_invalid_board_params() {
+    use charuco_capture_app_lib::camera_open::{prepare_preview_session, SessionParams};
+    let err = prepare_preview_session(Some(SessionParams {
+        count_target: Some(15),
+        score_target: Some(80.0),
+        square_mm: Some(15.0),
+        marker_mm: Some(20.0),
+        out_root: None,
+    }))
+    .unwrap_err();
+    assert!(err.contains("无法创建标定板"), "{err}");
+    assert!(err.contains("Marker"), "{err}");
+}
+
+#[test]
+fn prepare_preview_session_accepts_default_board() {
+    use charuco_capture_app_lib::camera_open::prepare_preview_session;
+    let config = prepare_preview_session(None).expect("default 20/15 mm board");
+    assert_eq!(config.square_mm, 20.0);
+    assert_eq!(config.marker_mm, 15.0);
+}

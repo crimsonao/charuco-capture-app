@@ -50,7 +50,7 @@ impl CaptureFlow {
             Ok(dir) => (Some(dir), None),
             Err(err) => (None, Some(err)),
         };
-        let flow = Self {
+        let mut flow = Self {
             config,
             dir,
             dir_error,
@@ -63,7 +63,7 @@ impl CaptureFlow {
             allow_overfill: false,
             next_id: 1,
         };
-        flow.persist(false);
+        let _ = flow.persist(false);
         flow
     }
 
@@ -71,11 +71,11 @@ impl CaptureFlow {
         self.dir_error.as_ref().map(|err| session_save_error_hint(err))
     }
 
-    pub fn persist_stop(&self) {
+    pub fn persist_stop(&mut self) {
         if self.accepted {
             return;
         }
-        self.persist(false);
+        let _ = self.persist(false);
     }
 
     pub fn process_detected(
@@ -121,43 +121,47 @@ impl CaptureFlow {
         let eval = evaluate_frame(&detected.corners, width, height, sharp, &saved);
         let mut hint = eval.hint.clone();
         let elapsed = self.last_save.map(|at| now.duration_since(at));
-        if let Some(dir) = self.dir.clone() {
-            if can_autosave(
-                eval.saveable,
-                elapsed,
-                self.shots.len(),
-                if self.allow_overfill {
-                    usize::MAX
-                } else {
-                    self.config.count_target
-                },
-            ) {
-                match save_jpeg(&dir, self.next_id as usize, bgr, width, height, channels) {
-                    Ok(path) => {
-                        self.shots.push(Shot {
-                            id: self.next_id,
-                            quality: eval.quality,
-                            diversity: eval.diversity,
-                            reproj: None,
-                            feature: eval.feature,
-                            corners: detected.corners.clone(),
-                            ids: detected.ids.clone(),
-                            path: image_path_for_json(&path),
-                        });
-                        self.next_id += 1;
-                        self.last_save = Some(now);
-                        self.persist(false);
-                        hint = format!(
-                            "已保存 {}/{}  {}",
-                            self.shots.len(),
-                            self.config.count_target,
-                            format_grade(eval.percent)
-                        );
-                        if self.shots.len() >= self.config.count_target {
-                            return self.run_calibration(board, hint);
+        if self.dir_error.is_none() {
+            if let Some(dir) = self.dir.clone() {
+                if can_autosave(
+                    eval.saveable,
+                    elapsed,
+                    self.shots.len(),
+                    if self.allow_overfill {
+                        usize::MAX
+                    } else {
+                        self.config.count_target
+                    },
+                ) {
+                    match save_jpeg(&dir, self.next_id as usize, bgr, width, height, channels) {
+                        Ok(path) => {
+                            self.shots.push(Shot {
+                                id: self.next_id,
+                                quality: eval.quality,
+                                diversity: eval.diversity,
+                                reproj: None,
+                                feature: eval.feature,
+                                corners: detected.corners.clone(),
+                                ids: detected.ids.clone(),
+                                path: image_path_for_json(&path),
+                            });
+                            self.next_id += 1;
+                            self.last_save = Some(now);
+                            if let Err(err) = self.persist(false) {
+                                return (session_save_error_hint(&err), None);
+                            }
+                            hint = format!(
+                                "已保存 {}/{}  {}",
+                                self.shots.len(),
+                                self.config.count_target,
+                                format_grade(eval.percent)
+                            );
+                            if self.shots.len() >= self.config.count_target {
+                                return self.run_calibration(board, hint);
+                            }
                         }
+                        Err(err) => hint = err,
                     }
-                    Err(err) => hint = err,
                 }
             }
         }
@@ -180,6 +184,13 @@ impl CaptureFlow {
             .map(|feature| SavedFeature { feature })
             .collect();
         let eval = evaluate_frame(&detected.corners, width, height, sharp, &peers);
+        if self.dir_error.is_some() {
+            return (
+                self.hint_prefix()
+                    .unwrap_or_else(|| session_save_error_hint("write failed")),
+                None,
+            );
+        }
         if !eval.saveable {
             return (eval.hint, None);
         }
@@ -216,14 +227,30 @@ impl CaptureFlow {
             .collect();
         trial_shots.push(candidate.clone());
         let size = self.image_size.unwrap_or((width, height));
-        let trial = match calibrate(&trial_shots, board, size) {
+        let trial = calibrate(&trial_shots, board, size);
+        self.conclude_trial(candidate, trial)
+    }
+
+    /// Finish a last-place trial after the candidate JPEG is already on disk.
+    /// Inject `CalibResult` in tests; production passes `calibrate(...)`.
+    pub fn conclude_trial(
+        &mut self,
+        candidate: Shot,
+        trial: Result<CalibResult, String>,
+    ) -> (String, Option<SessionDone>) {
+        let trial = match trial {
             Ok(result) => result,
             Err(err) => {
                 delete_image_file(&candidate.path);
                 return (format!("试标定失败，请继续换角度：{err}"), None);
             }
         };
-        if !decide_replace(&self.shots, candidate.quality, candidate.diversity, Some(&trial)) {
+        if !decide_replace(
+            &self.shots,
+            candidate.quality,
+            candidate.diversity,
+            Some(&trial),
+        ) {
             delete_image_file(&candidate.path);
             return (
                 "试探分未提升，已丢弃本帧，请继续换角度".into(),
@@ -251,7 +278,9 @@ impl CaptureFlow {
         match outcome {
             AfterCalib::NeedMore { culled } => {
                 self.phase = CapturePhase::Collecting;
-                self.persist(false);
+                if let Err(err) = self.persist(false) {
+                    return (session_save_error_hint(&err), None);
+                }
                 (
                     format!("已替换末位，淘汰 {culled} 张误差≥1 的图，请继续补拍"),
                     None,
@@ -259,7 +288,9 @@ impl CaptureFlow {
             }
             AfterCalib::Improve => {
                 self.phase = CapturePhase::Improve;
-                self.persist(false);
+                if let Err(err) = self.persist(false) {
+                    return (session_save_error_hint(&err), None);
+                }
                 let score = session_score_of_shots(&self.shots);
                 (
                     format!(
@@ -311,7 +342,9 @@ impl CaptureFlow {
         match outcome {
             AfterCalib::NeedMore { culled } => {
                 self.phase = CapturePhase::Collecting;
-                self.persist(false);
+                if let Err(err) = self.persist(false) {
+                    return (session_save_error_hint(&err), None);
+                }
                 (
                     format!("已淘汰 {culled} 张误差≥1 的图，请继续补拍"),
                     None,
@@ -319,7 +352,9 @@ impl CaptureFlow {
             }
             AfterCalib::Improve => {
                 self.phase = CapturePhase::Improve;
-                self.persist(false);
+                if let Err(err) = self.persist(false) {
+                    return (session_save_error_hint(&err), None);
+                }
                 let score = session_score_of_shots(&self.shots);
                 (
                     format!(
@@ -334,14 +369,30 @@ impl CaptureFlow {
         }
     }
 
-    fn accept_session(&mut self, hint: String) -> (String, Option<SessionDone>) {
+    pub fn accept_session(&mut self, hint: String) -> (String, Option<SessionDone>) {
+        let Some(dir) = self.dir.clone() else {
+            let err = "session directory missing".to_string();
+            self.dir_error = Some(err.clone());
+            self.accepted = false;
+            return (session_save_error_hint(&err), None);
+        };
+        let payload = session_payload(&self.config, &self.shots, true, self.last_calib.as_ref());
+        if let Err(err) = write_session_json(&dir, &payload) {
+            self.dir_error = Some(err.clone());
+            self.accepted = false;
+            let fallback = session_payload(&self.config, &self.shots, false, self.last_calib.as_ref());
+            let _ = write_session_json(&dir, &fallback);
+            return (session_save_error_hint(&err), None);
+        }
+        if let Err(err) = write_accepted_json(&dir, &payload) {
+            self.dir_error = Some(err.clone());
+            self.accepted = false;
+            let fallback = session_payload(&self.config, &self.shots, false, self.last_calib.as_ref());
+            let _ = write_session_json(&dir, &fallback);
+            return (session_save_error_hint(&err), None);
+        }
         self.accepted = true;
         self.phase = CapturePhase::Collecting;
-        let payload = session_payload(&self.config, &self.shots, true, self.last_calib.as_ref());
-        if let Some(dir) = self.dir.as_ref() {
-            let _ = write_session_json(dir, &payload);
-            let _ = write_accepted_json(dir, &payload);
-        }
         let score = session_score_of_shots(&self.shots);
         let mean = crate::calib::mean_reproj_of_shots(&self.shots);
         let matrix = self
@@ -354,18 +405,14 @@ impl CaptureFlow {
             average_percent: score,
             mean_reprojection_error: mean,
             camera_matrix: matrix,
-            session_dir: self
-                .dir
-                .as_ref()
-                .map(|dir| dir.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            session_dir: dir.to_string_lossy().into_owned(),
         };
         (format!("{hint} {}", format_grade(score)), Some(done))
     }
 
-    fn persist(&self, accepted: bool) {
+    pub fn persist(&mut self, accepted: bool) -> Result<(), String> {
         let Some(dir) = self.dir.as_ref() else {
-            return;
+            return Ok(());
         };
         let payload = session_payload(
             &self.config,
@@ -373,7 +420,13 @@ impl CaptureFlow {
             accepted,
             self.last_calib.as_ref(),
         );
-        let _ = write_session_json(dir, &payload);
+        match write_session_json(dir, &payload) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.dir_error = Some(err.clone());
+                Err(err)
+            }
+        }
     }
 }
 
