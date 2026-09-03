@@ -1,17 +1,7 @@
 <script setup lang="ts">
+import SetupPage from './pages/SetupPage.vue';
 </script>
 
 <template>
-  <main class="app">
-    <h1>ChArUco Capture</h1>
-    <p>Calibration desktop client (scaffold)</p>
-  </main>
+  <SetupPage />
 </template>
-
-<style scoped>
-.app {
-  font-family: system-ui, sans-serif;
-  padding: 2rem;
-  text-align: center;
-}
-</style>

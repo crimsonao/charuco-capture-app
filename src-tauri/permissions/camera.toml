@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-list-cameras"
+description = "Allows listing DirectShow camera modes"
+commands.allow = ["list_cameras"]
