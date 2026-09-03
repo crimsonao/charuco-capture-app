@@ -169,6 +169,56 @@ fn session_percent_weights_match_spec() {
 }
 
 #[test]
+fn post_replace_cull_removes_high_reproj_and_needs_more() {
+    let mut shots = vec![
+        shot(1, 1.0, 1.0, [0.1; 6]),
+        shot(2, 0.9, 0.8, [0.2; 6]),
+        shot(3, 1.0, 1.0, [0.3; 6]),
+    ];
+    evaluate_after_calib(&mut shots, &result_with(vec![0.45, 0.80, 0.42]), 3, 99.0);
+    let dropped = apply_replace(&mut shots, shot(9, 1.0, 1.0, [0.9; 6]));
+    assert_eq!(dropped.map(|item| item.id), Some(2));
+
+    let outcome = evaluate_after_calib(
+        &mut shots,
+        &result_with(vec![0.45, 0.42, REPROJ_LIMIT]),
+        3,
+        80.0,
+    );
+    assert_eq!(outcome, AfterCalib::NeedMore { culled: 1 });
+    assert_eq!(shots.len(), 2);
+    assert!(!shots.iter().any(|item| item.id == 9));
+    assert!(shots.iter().all(|item| item.reproj.is_some_and(|err| err < REPROJ_LIMIT)));
+}
+
+#[test]
+fn post_replace_cull_keeps_improve_when_count_ok() {
+    let mut shots = vec![
+        shot(1, 1.0, 1.0, [0.1; 6]),
+        shot(2, 0.9, 0.8, [0.2; 6]),
+        shot(3, 1.0, 1.0, [0.3; 6]),
+        shot(4, 1.0, 1.0, [0.4; 6]),
+    ];
+    evaluate_after_calib(
+        &mut shots,
+        &result_with(vec![0.70, 0.80, 0.75, 0.72]),
+        3,
+        80.0,
+    );
+    apply_replace(&mut shots, shot(9, 1.0, 1.0, [0.9; 6]));
+
+    let outcome = evaluate_after_calib(
+        &mut shots,
+        &result_with(vec![0.70, 0.75, 0.72, 1.50]),
+        3,
+        80.0,
+    );
+    assert_eq!(outcome, AfterCalib::Improve);
+    assert_eq!(shots.len(), 3);
+    assert!(shots.iter().all(|item| item.reproj.is_some_and(|err| err < REPROJ_LIMIT)));
+}
+
+#[test]
 fn synthetic_board_calibrate_returns_matrix_and_per_image() {
     let board = make_board(DEFAULT_SQUARE_M, DEFAULT_MARKER_M).expect("board");
     let (data, width, height, channels) =

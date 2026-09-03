@@ -117,3 +117,9 @@ fn open_attempt_times_out_on_past_deadline() {
         Instant::now() + Duration::from_secs(8)
     ));
 }
+
+#[test]
+fn camera_disconnect_hint_is_user_visible() {
+    use charuco_capture_app_lib::camera_open::CAMERA_DISCONNECT_HINT;
+    assert_eq!(CAMERA_DISCONNECT_HINT, "摄像头断开");
+}

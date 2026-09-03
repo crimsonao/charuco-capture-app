@@ -25,6 +25,9 @@ const PREVIEW_INTERVAL: Duration = Duration::from_millis(50);
 const OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const JPEG_QUALITY: i32 = 80;
 
+/// User-visible hint when consecutive read failures stop the preview loop.
+pub const CAMERA_DISCONNECT_HINT: &str = "摄像头断开";
+
 const CAP_MSMF: i32 = 1400;
 const CAP_DSHOW: i32 = 700;
 const CAP_PROP_FRAME_WIDTH: i32 = 3;
@@ -481,11 +484,13 @@ fn run_preview_loop(
         .checked_sub(PREVIEW_INTERVAL)
         .unwrap_or_else(Instant::now);
     let mut fail_reads = 0u32;
+    let mut last_frame_event: Option<FrameEvent> = None;
     while !stop.load(Ordering::SeqCst) {
         let Ok(mut frame) = opened.read_frame() else {
             fail_reads += 1;
             if fail_reads >= 30 {
                 flow.persist_stop();
+                emit_disconnect_hint(&app, &flow, last_frame_event.as_mut());
                 break;
             }
             thread::sleep(Duration::from_millis(20));
@@ -561,6 +566,7 @@ fn run_preview_loop(
             average_percent: session_score_of_shots(&flow.shots),
             mean_reprojection_error: crate::calib::mean_reproj_of_shots(&flow.shots),
         };
+        last_frame_event = Some(payload.clone());
         let _ = app.emit("frame", payload);
         if let Some(done) = done {
             let _ = app.emit("session-done", done);
@@ -568,6 +574,36 @@ fn run_preview_loop(
         }
     }
     flow.persist_stop();
+}
+
+fn emit_disconnect_hint(
+    app: &AppHandle,
+    flow: &CaptureFlow,
+    last_frame_event: Option<&mut FrameEvent>,
+) {
+    if let Some(payload) = last_frame_event {
+        payload.hint = CAMERA_DISCONNECT_HINT.into();
+        let _ = app.emit("frame", payload.clone());
+        return;
+    }
+    let phase = match flow.phase {
+        CapturePhase::Collecting => "collecting",
+        CapturePhase::Improve => "improve",
+    };
+    let _ = app.emit(
+        "frame",
+        FrameEvent {
+            jpeg_base64: String::new(),
+            hint: CAMERA_DISCONNECT_HINT.into(),
+            n_corners: 0,
+            corners: Vec::new(),
+            image_count: flow.shots.len(),
+            count_target: flow.config.count_target,
+            phase: phase.into(),
+            average_percent: session_score_of_shots(&flow.shots),
+            mean_reprojection_error: crate::calib::mean_reproj_of_shots(&flow.shots),
+        },
+    );
 }
 
 fn stop_session_inner() {

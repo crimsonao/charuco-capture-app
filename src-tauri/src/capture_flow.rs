@@ -233,27 +233,45 @@ impl CaptureFlow {
         if let Some(dropped) = apply_replace(&mut self.shots, candidate) {
             delete_image_file(&dropped.path);
         }
-        for (shot, err) in self.shots.iter_mut().zip(trial.per_image.iter()) {
-            shot.reproj = Some(*err);
-        }
-        self.last_calib = Some(trial);
-        if crate::calib::meets_target(
-            &self.shots,
+        let before: Vec<String> = self.shots.iter().map(|shot| shot.path.clone()).collect();
+        let outcome = evaluate_after_calib(
+            &mut self.shots,
+            &trial,
             self.config.count_target,
             self.config.score_target,
-        ) {
-            return self.accept_session("末位替换后已达标".into());
+        );
+        self.last_calib = Some(trial);
+        let kept: std::collections::HashSet<&str> =
+            self.shots.iter().map(|shot| shot.path.as_str()).collect();
+        for path in before {
+            if !kept.contains(path.as_str()) {
+                delete_image_file(&path);
+            }
         }
-        self.persist(false);
-        let score = session_score_of_shots(&self.shots);
-        (
-            format!(
-                "已替换末位，平均 {} / 目标 {}，继续补拍",
-                format_grade(score),
-                format_grade(self.config.score_target)
-            ),
-            None,
-        )
+        match outcome {
+            AfterCalib::NeedMore { culled } => {
+                self.phase = CapturePhase::Collecting;
+                self.persist(false);
+                (
+                    format!("已替换末位，淘汰 {culled} 张误差≥1 的图，请继续补拍"),
+                    None,
+                )
+            }
+            AfterCalib::Improve => {
+                self.phase = CapturePhase::Improve;
+                self.persist(false);
+                let score = session_score_of_shots(&self.shots);
+                (
+                    format!(
+                        "已替换末位，平均 {} / 目标 {}，继续补拍",
+                        format_grade(score),
+                        format_grade(self.config.score_target)
+                    ),
+                    None,
+                )
+            }
+            AfterCalib::Accepted => self.accept_session("末位替换后已达标".into()),
+        }
     }
 
     fn run_calibration(
