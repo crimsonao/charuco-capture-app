@@ -1,6 +1,8 @@
+use std::time::{Duration, Instant};
+
 use charuco_capture_app_lib::camera::{
     fourcc_attempts, fourcc_u32, frame_has_image, list_msmf_names, match_device_index,
-    open_attempts_for_mode, OpenRequest,
+    open_attempt_timed_out, open_attempts_for_mode, OpenRequest,
 };
 
 fn ocal4_720p_yuy2() -> OpenRequest {
@@ -104,4 +106,14 @@ fn fourcc_u32_is_little_endian_fourcc() {
     assert_eq!(fourcc_u32("YUY2"), Some(0x3259_5559));
     assert_eq!(fourcc_u32("auto"), None);
     assert_eq!(fourcc_u32("MJP"), None);
+}
+
+#[test]
+fn open_attempt_times_out_on_past_deadline() {
+    assert!(open_attempt_timed_out(
+        Instant::now() - Duration::from_secs(1)
+    ));
+    assert!(!open_attempt_timed_out(
+        Instant::now() + Duration::from_secs(8)
+    ));
 }

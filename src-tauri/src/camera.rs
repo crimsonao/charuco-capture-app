@@ -8,7 +8,8 @@ use std::collections::HashSet;
 
 pub use crate::camera_open::{
     fourcc_attempts, fourcc_u32, frame_has_image, frame_mean, list_msmf_names, match_device_index,
-    open_attempts_for_mode, open_capture, OpenAttempt, OpenRequest, OpenedCam,
+    open_attempt_timed_out, open_attempts_for_mode, open_capture, OpenAttempt, OpenRequest,
+    OpenedCam,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]

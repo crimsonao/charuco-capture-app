@@ -61,8 +61,6 @@ struct CameraHandle {
     ptr: *mut CvCam,
 }
 
-unsafe impl Send for CameraHandle {}
-
 impl Drop for CameraHandle {
     fn drop(&mut self) {
         unsafe { cvcam_release(self.ptr) }
@@ -284,7 +282,7 @@ pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
     let mut errors = Vec::new();
     for attempt in open_attempts_for_mode(req, &msmf_names) {
         for codec in fourcc_attempts(&req.fourcc) {
-            match try_open_with_timeout(attempt.backend, attempt.index, req, &codec) {
+            match try_open_backend(attempt.backend, attempt.index, req, &codec) {
                 Ok(opened) => return Ok(opened),
                 Err(err) => errors.push(err),
             }
@@ -301,30 +299,14 @@ pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
     ))
 }
 
-fn try_open_with_timeout(
-    backend: &'static str,
-    index: i32,
-    req: &OpenRequest,
-    codec: &str,
-) -> Result<OpenedCam, String> {
-    let req = req.clone();
-    let codec = codec.to_string();
-    let codec_label = codec.clone();
-    let (tx, rx) = mpsc::channel();
-    let worker = thread::Builder::new()
-        .name("cam-open".into())
-        .spawn(move || {
-            let result = try_open_backend(backend, index, &req, &codec);
-            let _ = tx.send(result);
-        })
-        .map_err(|err| format!("{backend}#{index}/{codec_label}: spawn {err}"))?;
-    match rx.recv_timeout(OPEN_TIMEOUT) {
-        Ok(result) => {
-            let _ = worker.join();
-            result
-        }
-        Err(_) => Err(format!("{backend}#{index}/{codec_label}: timeout")),
-    }
+/// True when an open/warmup attempt should abort and drop the capture.
+///
+/// Open and `read()` stay on the caller thread (preview / harness). A deadline
+/// replaces the old `cam-open` worker so VideoCapture is never moved across
+/// threads, and a timed-out attempt drops the handle before the next FOURCC
+/// or DSHOW try.
+pub fn open_attempt_timed_out(deadline: Instant) -> bool {
+    Instant::now() >= deadline
 }
 
 fn try_open_backend(
@@ -333,6 +315,19 @@ fn try_open_backend(
     req: &OpenRequest,
     codec: &str,
 ) -> Result<OpenedCam, String> {
+    try_open_backend_until(backend, index, req, codec, Instant::now() + OPEN_TIMEOUT)
+}
+
+fn try_open_backend_until(
+    backend: &str,
+    index: i32,
+    req: &OpenRequest,
+    codec: &str,
+    deadline: Instant,
+) -> Result<OpenedCam, String> {
+    if open_attempt_timed_out(deadline) {
+        return Err(format!("{backend}#{index}/{codec}: timeout"));
+    }
     let api = match backend {
         "MSMF" => CAP_MSMF,
         "DSHOW" => CAP_DSHOW,
@@ -364,6 +359,9 @@ fn try_open_backend(
     let mut last_height = 0i32;
     let mut last_mean = 0.0f64;
     for _ in 0..tries {
+        if open_attempt_timed_out(deadline) {
+            return Err(format!("{backend}#{index}/{codec}: timeout"));
+        }
         match read_preview_frame(&capture) {
             Ok(frame) => {
                 last_width = frame.width;
@@ -533,4 +531,46 @@ pub async fn stop_session() -> Result<(), String> {
         .await
         .map_err(|err| format!("stop_session join: {err}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    fn sample_request() -> OpenRequest {
+        OpenRequest {
+            device_name: "ocal4".into(),
+            dshow_index: 1,
+            width: 1280,
+            height: 720,
+            fourcc: "YUY2".into(),
+        }
+    }
+
+    #[test]
+    fn expired_deadline_returns_timeout_without_opening() {
+        let started = Instant::now();
+        let err = match try_open_backend_until(
+            "MSMF",
+            0,
+            &sample_request(),
+            "YUY2",
+            Instant::now() - Duration::from_secs(1),
+        ) {
+            Ok(_) => panic!("expired deadline must not open"),
+            Err(err) => err,
+        };
+        assert!(err.contains("timeout"), "{err}");
+        assert!(started.elapsed() < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn past_deadline_is_timed_out() {
+        assert!(open_attempt_timed_out(
+            Instant::now() - Duration::from_secs(1)
+        ));
+        assert!(!open_attempt_timed_out(
+            Instant::now() + Duration::from_secs(8)
+        ));
+    }
 }
