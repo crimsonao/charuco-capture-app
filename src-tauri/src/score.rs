@@ -40,14 +40,16 @@ pub fn reproj_unit(error: f64) -> f64 {
 }
 
 pub fn preview_percent(quality: f64, diversity: f64) -> f64 {
-    100.0 * (0.85 * quality + 0.15 * diversity)
+    let mixed = 100.0 * (0.85 * quality + 0.15 * diversity);
+    clip(mixed, 0.0, 100.0)
 }
 
 pub fn session_percent(quality: f64, diversity: f64, mean_reproj: Option<f64>) -> f64 {
-    match mean_reproj {
-        None => preview_percent(quality, diversity),
-        Some(e) => 100.0 * (0.40 * quality + 0.10 * diversity + 0.50 * reproj_unit(e)),
-    }
+    let mixed = match mean_reproj {
+        None => 0.85 * quality + 0.15 * diversity,
+        Some(e) => 0.40 * quality + 0.10 * diversity + 0.50 * reproj_unit(e),
+    };
+    clip(100.0 * mixed, 0.0, 100.0)
 }
 
 fn covariance_2d(points: &[[f32; 2]], cx: f32, cy: f32) -> [[f64; 2]; 2] {
@@ -87,7 +89,7 @@ fn eigh_symmetric_2x2(cov: [[f64; 2]; 2]) -> ([f64; 2], [[f64; 2]; 2]) {
     let eval1 = trace / 2.0 + disc;
 
     let mut axis0 = [b, eval0 - a];
-    let mut axis1 = [eval1 - c, b];
+    let mut axis1 = [b, eval1 - a];
     let len0 = (axis0[0] * axis0[0] + axis0[1] * axis0[1]).sqrt();
     let len1 = (axis1[0] * axis1[0] + axis1[1] * axis1[1]).sqrt();
     if len0 < 1e-12 {
@@ -230,5 +232,15 @@ mod tests {
     fn quality_unit_blend() {
         assert!((quality_unit(20, 100.0) - 1.0).abs() < 1e-9);
         assert!((quality_unit(0, 0.0) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn preview_percent_clips_to_hundred() {
+        assert!((preview_percent(1.2, 1.2) - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn session_percent_clips_to_hundred() {
+        assert!((session_percent(1.2, 1.2, Some(0.30)) - 100.0).abs() < 1e-6);
     }
 }
