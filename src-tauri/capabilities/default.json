@@ -7,6 +7,7 @@
     "core:default",
     "shell:allow-open",
     "allow-list-cameras",
+    "allow-output-dir",
     "allow-preview"
   ]
 }

@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import CapturePage, { type SessionSummary } from './pages/CapturePage.vue';
 import DonePage from './pages/DonePage.vue';
 import SetupPage from './pages/SetupPage.vue';
+import StartPage from './pages/StartPage.vue';
 
 interface CameraMode {
   device_name: string;
@@ -17,12 +18,28 @@ interface SessionParams {
   score_target: number;
   square_mm: number;
   marker_mm: number;
+  out_root: string;
 }
 
-const page = ref<'setup' | 'capture' | 'done'>('setup');
+const page = ref<'start' | 'setup' | 'capture' | 'done'>('start');
+const outputDir = ref('');
 const selectedMode = ref<CameraMode | null>(null);
 const sessionParams = ref<SessionParams | null>(null);
 const doneSummary = ref<SessionSummary | null>(null);
+
+function handleBegin(dir: string): void {
+  outputDir.value = dir.trim();
+  selectedMode.value = null;
+  sessionParams.value = null;
+  doneSummary.value = null;
+  page.value = 'setup';
+}
+
+function handleBackToStart(): void {
+  selectedMode.value = null;
+  sessionParams.value = null;
+  page.value = 'start';
+}
 
 function handleStartCapture(payload: { mode: CameraMode; session: SessionParams }): void {
   selectedMode.value = payload.mode;
@@ -50,7 +67,13 @@ function handleCloseDone(): void {
 </script>
 
 <template>
-  <SetupPage v-if="page === 'setup'" @start-capture="handleStartCapture" />
+  <StartPage v-if="page === 'start'" :initial-dir="outputDir" @begin="handleBegin" />
+  <SetupPage
+    v-else-if="page === 'setup'"
+    :output-dir="outputDir"
+    @back="handleBackToStart"
+    @start-capture="handleStartCapture"
+  />
   <CapturePage
     v-else-if="page === 'capture' && selectedMode !== null && sessionParams !== null"
     :mode="selectedMode"

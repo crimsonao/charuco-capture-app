@@ -42,7 +42,12 @@ Link steps that actually ran:
 
 ## Runtime
 
-Put `opencv_world4120.dll` on `PATH` or next to the exe (`build.rs` copies it into the cargo target dir). Example:
+`pnpm tauri build` stages `opencv_world*.dll` and `opencv_videoio*.dll` (if
+present) into `opencv-runtime/` and NSIS copies them **next to the exe**. See
+the repo-root `README.md` for `OPENCV_DIR` and the exact copy commands.
+
+For `cargo test` / `tauri dev`, `build.rs` also copies those DLLs into the
+Cargo target dir. Example PATH fallback:
 
 ```bat
 set PATH=C:\Users\50429\Desktop\mark\centerExtration\opencv\build\x64\vc16\bin;%PATH%

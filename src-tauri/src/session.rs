@@ -86,6 +86,19 @@ pub fn default_output_root() -> PathBuf {
     home.join("ChArUcoCapture")
 }
 
+/// Use a non-empty user path, otherwise Desktop/ChArUcoCapture.
+pub fn resolve_out_root(raw: Option<&str>) -> PathBuf {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => default_output_root(),
+    }
+}
+
+#[tauri::command]
+pub fn default_output_dir() -> String {
+    default_output_root().to_string_lossy().into_owned()
+}
+
 pub fn session_dir_name(stamp: &str) -> String {
     format!("session_{stamp}")
 }

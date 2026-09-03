@@ -16,6 +16,7 @@ interface SessionParams {
   score_target: number;
   square_mm: number;
   marker_mm: number;
+  out_root: string;
 }
 
 export interface SessionSummary {

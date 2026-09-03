@@ -17,7 +17,7 @@ use crate::camera::normalize_fourcc;
 use crate::capture_flow::{CaptureFlow, CapturePhase, SessionDone};
 use crate::detect::{draw_detected, frame_hint, make_board};
 use crate::jpeg::encode_jpeg_bytes;
-use crate::session::{default_output_root, SessionConfig};
+use crate::session::{resolve_out_root, SessionConfig};
 
 const BLACK_MEAN: f64 = 4.0;
 const MIN_FRAME_EDGE: i32 = 16;
@@ -119,6 +119,7 @@ pub struct SessionParams {
     pub score_target: Option<f64>,
     pub square_mm: Option<f64>,
     pub marker_mm: Option<f64>,
+    pub out_root: Option<String>,
 }
 
 impl SessionParams {
@@ -128,7 +129,7 @@ impl SessionParams {
             self.score_target.unwrap_or(crate::session::DEFAULT_SCORE_TARGET),
             self.square_mm.unwrap_or(crate::session::DEFAULT_SQUARE_MM),
             self.marker_mm.unwrap_or(crate::session::DEFAULT_MARKER_MM),
-            default_output_root(),
+            resolve_out_root(self.out_root.as_deref()),
         )
     }
 }

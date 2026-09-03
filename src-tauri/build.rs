@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
 fn main() {
     tauri_build::build();
 
@@ -22,15 +25,58 @@ fn main() {
         .flag_if_supported("/EHsc")
         .compile("opencv_capture");
 
+    let mut dest_dirs = Vec::new();
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        dest_dirs.push(PathBuf::from(manifest_dir).join("opencv-runtime"));
+    }
     if let Ok(out_dir) = std::env::var("OUT_DIR") {
-        let mut dest = std::path::PathBuf::from(out_dir);
-        dest.pop();
-        dest.pop();
-        dest.pop();
-        let src = format!("{opencv_dir}\\x64\\vc16\\bin\\opencv_world4120.dll");
-        let dest_dll = dest.join("opencv_world4120.dll");
-        if std::path::Path::new(&src).exists() {
-            let _ = std::fs::copy(&src, dest_dll);
+        if let Some(profile_dir) = cargo_profile_dir(Path::new(&out_dir)) {
+            dest_dirs.push(profile_dir);
+        }
+    }
+    stage_opencv_dlls(Path::new(&opencv_dir), &dest_dirs);
+}
+
+fn cargo_profile_dir(out_dir: &Path) -> Option<PathBuf> {
+    let profile = std::env::var("PROFILE").ok()?;
+    out_dir.ancestors().find_map(|ancestor| {
+        if ancestor.file_name().and_then(|n| n.to_str()) == Some(profile.as_str()) {
+            Some(ancestor.to_path_buf())
+        } else {
+            None
+        }
+    })
+}
+
+fn is_bundled_opencv_dll(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if !lower.ends_with(".dll") {
+        return false;
+    }
+    if lower.starts_with("opencv_world") {
+        return !lower.ends_with("d.dll");
+    }
+    lower.starts_with("opencv_videoio")
+}
+
+fn stage_opencv_dlls(opencv_dir: &Path, dest_dirs: &[PathBuf]) {
+    let bin = opencv_dir.join("x64").join("vc16").join("bin");
+    let Ok(entries) = fs::read_dir(&bin) else {
+        return;
+    };
+    for dest in dest_dirs {
+        let _ = fs::create_dir_all(dest);
+    }
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if !is_bundled_opencv_dll(name_str) {
+            continue;
+        }
+        for dest in dest_dirs {
+            let _ = fs::copy(entry.path(), dest.join(&name));
         }
     }
 }

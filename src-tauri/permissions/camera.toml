@@ -4,6 +4,11 @@ description = "Allows listing DirectShow camera modes"
 commands.allow = ["list_cameras"]
 
 [[permission]]
+identifier = "allow-output-dir"
+description = "Allows reading the default capture output directory"
+commands.allow = ["default_output_dir"]
+
+[[permission]]
 identifier = "allow-preview"
 description = "Allows starting and stopping camera preview"
 commands.allow = ["start_preview", "stop_session", "open_session_folder"]

@@ -15,9 +15,15 @@ export interface SessionParams {
   score_target: number;
   square_mm: number;
   marker_mm: number;
+  out_root: string;
 }
 
+const props = defineProps<{
+  outputDir: string;
+}>();
+
 const emit = defineEmits<{
+  back: [];
   'start-capture': [payload: { mode: CameraMode; session: SessionParams }];
 }>();
 
@@ -88,8 +94,13 @@ function handleStartCapture(): void {
       score_target: gradeScores[scoreGrade.value],
       square_mm: Number(squareMm.value) || 20,
       marker_mm: Number(markerMm.value) || 15,
+      out_root: props.outputDir.trim(),
     },
   });
+}
+
+function handleBack(): void {
+  emit('back');
 }
 
 onMounted(() => {
@@ -129,6 +140,9 @@ onMounted(() => {
     </section>
 
     <div class="setup__toolbar">
+      <button type="button" class="btn btn--ghost" aria-label="返回开始页" @click="handleBack">
+        返回
+      </button>
       <button type="button" class="btn btn--ghost" :disabled="isLoading" @click="loadCameras">
         刷新列表
       </button>

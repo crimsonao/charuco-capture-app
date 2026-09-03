@@ -6,9 +6,10 @@ use charuco_capture_app_lib::detect::{
 };
 use charuco_capture_app_lib::score::{evaluate_frame, SavedFeature, MIN_SHARPNESS};
 use charuco_capture_app_lib::calib::{CalibResult, Shot};
+use charuco_capture_app_lib::camera_open::SessionParams;
 use charuco_capture_app_lib::session::{
-    can_autosave, default_output_root, image_path_for_json, save_jpeg, session_json_value,
-    session_payload, session_save_error_hint, sharpness, start_session_dir,
+    can_autosave, default_output_root, image_path_for_json, resolve_out_root, save_jpeg,
+    session_json_value, session_payload, session_save_error_hint, sharpness, start_session_dir,
     start_session_dir_named, write_accepted_json, write_session_json, CapturedImage,
     SessionConfig, SAVE_COOLDOWN, SAVE_JPEG_QUALITY,
 };
@@ -104,6 +105,52 @@ fn default_output_root_is_charuco_capture_under_desktop() {
     let root = default_output_root();
     assert_eq!(
         root.file_name().and_then(|n| n.to_str()),
+        Some("ChArUcoCapture")
+    );
+}
+
+#[test]
+fn resolve_out_root_keeps_custom_path() {
+    let custom = std::path::PathBuf::from(r"D:\calib-out");
+    assert_eq!(resolve_out_root(Some(r"D:\calib-out")), custom);
+    assert_eq!(resolve_out_root(Some("  D:\\calib-out  ")), custom);
+}
+
+#[test]
+fn resolve_out_root_blank_uses_default() {
+    let expected = default_output_root();
+    assert_eq!(resolve_out_root(None), expected);
+    assert_eq!(resolve_out_root(Some("")), expected);
+    assert_eq!(resolve_out_root(Some("   ")), expected);
+}
+
+#[test]
+fn session_params_uses_custom_out_root() {
+    let cfg = SessionParams {
+        count_target: Some(12),
+        score_target: Some(70.0),
+        square_mm: Some(20.0),
+        marker_mm: Some(15.0),
+        out_root: Some(r"D:\calib-out".into()),
+    }
+    .into_config();
+    assert_eq!(cfg.out_root, std::path::PathBuf::from(r"D:\calib-out"));
+    assert_eq!(cfg.count_target, 12);
+    assert_eq!(cfg.score_target, 70.0);
+}
+
+#[test]
+fn session_params_blank_out_root_uses_default() {
+    let cfg = SessionParams {
+        count_target: None,
+        score_target: None,
+        square_mm: None,
+        marker_mm: None,
+        out_root: Some("  ".into()),
+    }
+    .into_config();
+    assert_eq!(
+        cfg.out_root.file_name().and_then(|n| n.to_str()),
         Some("ChArUcoCapture")
     );
 }

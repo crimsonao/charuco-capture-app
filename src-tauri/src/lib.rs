@@ -15,7 +15,8 @@ pub fn run() {
             camera::list_cameras,
             camera_open::start_preview,
             camera_open::stop_session,
-            camera_open::open_session_folder
+            camera_open::open_session_folder,
+            session::default_output_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
