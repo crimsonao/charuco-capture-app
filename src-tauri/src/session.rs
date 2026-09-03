@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::camera_open::encode_jpeg_bytes;
+use crate::calib::{CalibResult, Shot};
 use crate::detect::sharpness as frame_sharpness;
-use crate::score::session_percent;
+use crate::jpeg::encode_jpeg_bytes;
+use crate::score::{preview_percent, session_percent};
 
 pub const SAVE_COOLDOWN: Duration = Duration::from_millis(700);
 pub const SAVE_JPEG_QUALITY: i32 = 95;
@@ -50,6 +51,22 @@ impl SessionConfig {
 
     pub fn clamp_count(n: usize) -> usize {
         n.max(MIN_COUNT_TARGET)
+    }
+
+    pub fn from_setup(
+        count_target: usize,
+        score_target: f64,
+        square_mm: f64,
+        marker_mm: f64,
+        out_root: PathBuf,
+    ) -> Self {
+        Self {
+            count_target: Self::clamp_count(count_target),
+            score_target,
+            square_mm,
+            marker_mm,
+            out_root,
+        }
     }
 }
 
@@ -122,6 +139,51 @@ pub fn write_session_json(dir: &Path, payload: &Value) -> Result<(), String> {
     let path = dir.join("session.json");
     let text = serde_json::to_string_pretty(payload).map_err(|err| err.to_string())?;
     std::fs::write(&path, text).map_err(|err| format!("write session.json: {err}"))
+}
+
+pub fn write_accepted_json(dir: &Path, payload: &Value) -> Result<(), String> {
+    let path = dir.join("accepted.json");
+    let text = serde_json::to_string_pretty(payload).map_err(|err| err.to_string())?;
+    std::fs::write(&path, text).map_err(|err| format!("write accepted.json: {err}"))
+}
+
+pub fn delete_image_file(path: &str) {
+    if path.is_empty() {
+        return;
+    }
+    let _ = std::fs::remove_file(path);
+}
+
+pub fn captured_from_shot(shot: &Shot) -> CapturedImage {
+    let percent = match shot.reproj {
+        Some(_) => session_percent(shot.quality, shot.diversity, shot.reproj),
+        None => preview_percent(shot.quality, shot.diversity),
+    };
+    CapturedImage {
+        path: shot.path.clone(),
+        n_corners: shot.corners.len(),
+        quality: shot.quality,
+        diversity: shot.diversity,
+        percent,
+        reprojection_error: shot.reproj,
+        feature: shot.feature,
+    }
+}
+
+pub fn session_payload(
+    config: &SessionConfig,
+    shots: &[Shot],
+    accepted: bool,
+    calib: Option<&CalibResult>,
+) -> Value {
+    let images: Vec<CapturedImage> = shots.iter().map(captured_from_shot).collect();
+    let mut payload = session_json_value(config, &images, accepted);
+    if let Some(calib) = calib {
+        payload["cameraMatrix"] = json!(calib.camera_matrix);
+        payload["distCoeffs"] = json!(calib.dist_coeffs);
+        payload["overallReprojectionError"] = json!(round_places(calib.overall_rms, 4));
+    }
+    payload
 }
 
 pub fn can_autosave(

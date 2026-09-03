@@ -12,14 +12,12 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use tauri::{AppHandle, Emitter};
 
+use crate::calib::session_score_of_shots;
 use crate::camera::normalize_fourcc;
-use crate::detect::{detect_charuco, draw_detected, frame_hint, make_board};
-use crate::score::{evaluate_frame, SavedFeature};
-use crate::session::{
-    can_autosave, format_grade, image_path_for_json, save_jpeg, session_json_value,
-    session_save_error_hint, sharpness, start_session_dir, write_session_json, CapturedImage,
-    SessionConfig,
-};
+use crate::capture_flow::{CaptureFlow, CapturePhase, SessionDone};
+use crate::detect::{draw_detected, frame_hint, make_board};
+use crate::jpeg::encode_jpeg_bytes;
+use crate::session::{default_output_root, SessionConfig};
 
 const BLACK_MEAN: f64 = 4.0;
 const MIN_FRAME_EDGE: i32 = 16;
@@ -96,13 +94,6 @@ extern "C" {
     fn cvcam_read(cam: *mut CvCam, out: *mut CvFrame) -> i32;
     fn cvcam_frame_free(frame: *mut CvFrame);
     fn cvcam_frame_mean(frame: *const CvFrame) -> f64;
-    fn cvcam_imencode_jpeg(
-        frame: *const CvFrame,
-        quality: i32,
-        out: *mut *mut u8,
-        out_len: *mut i32,
-    ) -> i32;
-    fn cvcam_bytes_free(ptr: *mut u8);
     fn cvcam_release(cam: *mut CvCam);
 }
 
@@ -114,6 +105,29 @@ pub struct FrameEvent {
     pub corners: Vec<[f32; 2]>,
     pub image_count: usize,
     pub count_target: usize,
+    pub phase: String,
+    pub average_percent: f64,
+    pub mean_reprojection_error: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SessionParams {
+    pub count_target: Option<usize>,
+    pub score_target: Option<f64>,
+    pub square_mm: Option<f64>,
+    pub marker_mm: Option<f64>,
+}
+
+impl SessionParams {
+    pub fn into_config(self) -> SessionConfig {
+        SessionConfig::from_setup(
+            self.count_target.unwrap_or(crate::session::DEFAULT_COUNT_TARGET),
+            self.score_target.unwrap_or(crate::session::DEFAULT_SCORE_TARGET),
+            self.square_mm.unwrap_or(crate::session::DEFAULT_SQUARE_MM),
+            self.marker_mm.unwrap_or(crate::session::DEFAULT_MARKER_MM),
+            default_output_root(),
+        )
+    }
 }
 
 struct PreviewSession {
@@ -440,30 +454,6 @@ pub fn frame_mean(frame: &PreviewFrame) -> f64 {
     frame.mean
 }
 
-pub fn encode_jpeg_bytes(
-    data: &[u8],
-    width: i32,
-    height: i32,
-    channels: i32,
-    quality: i32,
-) -> Result<Vec<u8>, String> {
-    let raw = CvFrame {
-        data: data.as_ptr() as *mut u8,
-        width,
-        height,
-        channels,
-    };
-    let mut out = std::ptr::null_mut();
-    let mut out_len = 0i32;
-    let ok = unsafe { cvcam_imencode_jpeg(&raw, quality, &mut out, &mut out_len) };
-    if ok == 0 || out.is_null() || out_len <= 0 {
-        return Err("imencode failed".into());
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(out, out_len as usize) }.to_vec();
-    unsafe { cvcam_bytes_free(out) };
-    Ok(bytes)
-}
-
 fn encode_jpeg_base64(frame: &PreviewFrame) -> Result<String, String> {
     let bytes = encode_jpeg_bytes(
         &frame.data,
@@ -475,30 +465,33 @@ fn encode_jpeg_base64(frame: &PreviewFrame) -> Result<String, String> {
     Ok(STANDARD.encode(bytes))
 }
 
-fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc<AtomicBool>) {
-    let config = SessionConfig::default_capture();
+fn run_preview_loop(
+    opened: &mut OpenedCam,
+    app: AppHandle,
+    stop: std::sync::Arc<AtomicBool>,
+    config: SessionConfig,
+) {
     let board = make_board(
         (config.square_mm / 1000.0) as f32,
         (config.marker_mm / 1000.0) as f32,
     )
     .ok();
-    let (session_dir, session_dir_error) = match start_session_dir(&config.out_root) {
-        Ok(dir) => (Some(dir), None),
-        Err(err) => (None, Some(err)),
-    };
-    let mut captures: Vec<CapturedImage> = Vec::new();
-    let mut last_save: Option<Instant> = None;
-    if let Some(dir) = session_dir.as_ref() {
-        let _ = write_session_json(dir, &session_json_value(&config, &captures, false));
-    }
+    let mut flow = CaptureFlow::start(config);
     let mut last_emit = Instant::now()
         .checked_sub(PREVIEW_INTERVAL)
         .unwrap_or_else(Instant::now);
+    let mut fail_reads = 0u32;
     while !stop.load(Ordering::SeqCst) {
         let Ok(mut frame) = opened.read_frame() else {
+            fail_reads += 1;
+            if fail_reads >= 30 {
+                flow.persist_stop();
+                break;
+            }
             thread::sleep(Duration::from_millis(20));
             continue;
         };
+        fail_reads = 0;
         let now = Instant::now();
         if now.duration_since(last_emit) < PREVIEW_INTERVAL {
             continue;
@@ -508,8 +501,9 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
         let mut n_corners = 0usize;
         let mut corners = Vec::new();
         let mut hint = frame_hint(0);
+        let mut done: Option<SessionDone> = None;
         if let Some(board) = board.as_ref() {
-            if let Ok(Some(detected)) = detect_charuco(
+            if let Some(detected) = crate::capture_flow::detect_or_none(
                 &frame.data,
                 frame.width,
                 frame.height,
@@ -519,69 +513,17 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
                 n_corners = detected.corners.len();
                 corners = detected.corners.clone();
                 if !detected.corners.is_empty() {
-                    let sharp = sharpness(
+                    let (next_hint, next_done) = flow.process_detected(
                         &frame.data,
                         frame.width,
                         frame.height,
                         frame.channels,
-                    )
-                    .unwrap_or(0.0);
-                    let saved: Vec<SavedFeature> = captures
-                        .iter()
-                        .map(|item| SavedFeature {
-                            feature: item.feature,
-                        })
-                        .collect();
-                    let eval = evaluate_frame(
-                        &detected.corners,
-                        frame.width,
-                        frame.height,
-                        sharp,
-                        &saved,
+                        &detected,
+                        board,
+                        now,
                     );
-                    hint = eval.hint.clone();
-                    let elapsed = last_save.map(|at| now.duration_since(at));
-                    if let Some(dir) = session_dir.as_ref() {
-                        if can_autosave(
-                            eval.saveable,
-                            elapsed,
-                            captures.len(),
-                            config.count_target,
-                        ) {
-                            match save_jpeg(
-                                dir,
-                                captures.len() + 1,
-                                &frame.data,
-                                frame.width,
-                                frame.height,
-                                frame.channels,
-                            ) {
-                                Ok(path) => {
-                                    captures.push(CapturedImage {
-                                        path: image_path_for_json(&path),
-                                        n_corners: detected.corners.len(),
-                                        quality: eval.quality,
-                                        diversity: eval.diversity,
-                                        percent: eval.percent,
-                                        reprojection_error: None,
-                                        feature: eval.feature,
-                                    });
-                                    last_save = Some(now);
-                                    let _ = write_session_json(
-                                        dir,
-                                        &session_json_value(&config, &captures, false),
-                                    );
-                                    hint = format!(
-                                        "已保存 {}/{}  {}",
-                                        captures.len(),
-                                        config.count_target,
-                                        format_grade(eval.percent)
-                                    );
-                                }
-                                Err(err) => hint = err,
-                            }
-                        }
-                    }
+                    hint = next_hint;
+                    done = next_done;
                 }
                 let _ = draw_detected(
                     &mut frame.data,
@@ -593,8 +535,7 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
             }
         }
 
-        if let Some(err) = session_dir_error.as_ref() {
-            let save_hint = session_save_error_hint(err);
+        if let Some(save_hint) = flow.hint_prefix() {
             hint = if hint == frame_hint(0) {
                 save_hint
             } else {
@@ -605,19 +546,28 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
         let Ok(jpeg_base64) = encode_jpeg_base64(&frame) else {
             continue;
         };
+        let phase = match flow.phase {
+            CapturePhase::Collecting => "collecting",
+            CapturePhase::Improve => "improve",
+        };
         let payload = FrameEvent {
             jpeg_base64,
             hint,
             n_corners,
             corners,
-            image_count: captures.len(),
-            count_target: config.count_target,
+            image_count: flow.shots.len(),
+            count_target: flow.config.count_target,
+            phase: phase.into(),
+            average_percent: session_score_of_shots(&flow.shots),
+            mean_reprojection_error: crate::calib::mean_reproj_of_shots(&flow.shots),
         };
         let _ = app.emit("frame", payload);
+        if let Some(done) = done {
+            let _ = app.emit("session-done", done);
+            break;
+        }
     }
-    if let Some(dir) = session_dir.as_ref() {
-        let _ = write_session_json(dir, &session_json_value(&config, &captures, false));
-    }
+    flow.persist_stop();
 }
 
 fn stop_session_inner() {
@@ -630,7 +580,11 @@ fn stop_session_inner() {
     }
 }
 
-fn start_preview_blocking(app: AppHandle, req: OpenRequest) -> Result<(i32, i32, String), String> {
+fn start_preview_blocking(
+    app: AppHandle,
+    req: OpenRequest,
+    config: SessionConfig,
+) -> Result<(i32, i32, String), String> {
     stop_session_inner();
     let (tx, rx) = mpsc::channel();
     let stop = std::sync::Arc::new(AtomicBool::new(false));
@@ -641,7 +595,7 @@ fn start_preview_blocking(app: AppHandle, req: OpenRequest) -> Result<(i32, i32,
             Ok(mut opened) => {
                 let info = (opened.width, opened.height, opened.backend.clone());
                 let _ = tx.send(Ok(info));
-                run_preview_loop(&mut opened, app, stop_flag);
+                run_preview_loop(&mut opened, app, stop_flag, config);
             }
             Err(err) => {
                 let _ = tx.send(Err(err));
@@ -664,8 +618,12 @@ fn start_preview_blocking(app: AppHandle, req: OpenRequest) -> Result<(i32, i32,
 pub async fn start_preview(
     app: AppHandle,
     req: OpenRequest,
+    session: Option<SessionParams>,
 ) -> Result<(i32, i32, String), String> {
-    tauri::async_runtime::spawn_blocking(move || start_preview_blocking(app, req))
+    let config = session
+        .map(SessionParams::into_config)
+        .unwrap_or_else(SessionConfig::default_capture);
+    tauri::async_runtime::spawn_blocking(move || start_preview_blocking(app, req, config))
         .await
         .map_err(|err| format!("start_preview join: {err}"))?
 }
@@ -675,6 +633,18 @@ pub async fn stop_session() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(stop_session_inner)
         .await
         .map_err(|err| format!("stop_session join: {err}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_session_folder(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("empty session folder".into());
+    }
+    std::process::Command::new("explorer")
+        .arg(&path)
+        .spawn()
+        .map_err(|err| format!("open folder: {err}"))?;
     Ok(())
 }
 

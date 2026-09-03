@@ -5,6 +5,9 @@
 #include <cstring>
 #include <vector>
 
+#include <cmath>
+
+#include <opencv2/calib3d.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -384,6 +387,111 @@ int cvcharuco_draw(CvFrame *frame, const CvCharucoDetect *det, int enough) {
     }
     return 1;
   } catch (...) {
+    return 0;
+  }
+}
+
+void cvcharuco_calibrate_free(CvCalibResult *out) {
+  if (out == nullptr) {
+    return;
+  }
+  std::free(out->per_image);
+  out->per_image = nullptr;
+  out->n_images = 0;
+  out->n_dist = 0;
+  out->overall_rms = 0.0;
+  std::memset(out->camera_matrix, 0, sizeof(out->camera_matrix));
+  std::memset(out->dist_coeffs, 0, sizeof(out->dist_coeffs));
+}
+
+int cvcharuco_calibrate(CvCharuco *board, int width, int height,
+                        const CvCalibView *views, int n_views,
+                        CvCalibResult *out) {
+  if (out != nullptr) {
+    std::memset(out->camera_matrix, 0, sizeof(out->camera_matrix));
+    std::memset(out->dist_coeffs, 0, sizeof(out->dist_coeffs));
+    out->n_dist = 0;
+    out->overall_rms = 0.0;
+    out->per_image = nullptr;
+    out->n_images = 0;
+  }
+  if (board == nullptr || views == nullptr || out == nullptr || n_views < 3 ||
+      width < 16 || height < 16) {
+    return 0;
+  }
+  try {
+    auto *state = reinterpret_cast<CvCharucoImpl *>(board);
+    const cv::aruco::CharucoBoard &cb = state->charuco.getBoard();
+    std::vector<cv::Mat> object_points;
+    std::vector<cv::Mat> image_points;
+    object_points.reserve(static_cast<size_t>(n_views));
+    image_points.reserve(static_cast<size_t>(n_views));
+
+    for (int i = 0; i < n_views; ++i) {
+      if (views[i].n_corners < 4 || views[i].corners == nullptr ||
+          views[i].ids == nullptr) {
+        return 0;
+      }
+      std::vector<cv::Point2f> corners(static_cast<size_t>(views[i].n_corners));
+      std::vector<int> ids(static_cast<size_t>(views[i].n_corners));
+      for (int j = 0; j < views[i].n_corners; ++j) {
+        corners[static_cast<size_t>(j)] = cv::Point2f(
+            views[i].corners[j * 2], views[i].corners[j * 2 + 1]);
+        ids[static_cast<size_t>(j)] = views[i].ids[j];
+      }
+      cv::Mat obj;
+      cv::Mat img;
+      cb.matchImagePoints(corners, ids, obj, img);
+      if (obj.empty() || img.empty() || obj.rows != img.rows) {
+        return 0;
+      }
+      object_points.push_back(obj);
+      image_points.push_back(img);
+    }
+
+    cv::Mat camera_matrix = cv::Mat::eye(3, 3, CV_64F);
+    cv::Mat dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
+    std::vector<cv::Mat> rvecs;
+    std::vector<cv::Mat> tvecs;
+    const double rms = cv::calibrateCamera(
+        object_points, image_points, cv::Size(width, height), camera_matrix,
+        dist_coeffs, rvecs, tvecs);
+
+    for (int r = 0; r < 3; ++r) {
+      for (int c = 0; c < 3; ++c) {
+        out->camera_matrix[r * 3 + c] = camera_matrix.at<double>(r, c);
+      }
+    }
+    const int n_dist =
+        (std::min)(8, dist_coeffs.rows * dist_coeffs.cols);
+    out->n_dist = n_dist;
+    for (int i = 0; i < n_dist; ++i) {
+      out->dist_coeffs[i] = dist_coeffs.at<double>(i);
+    }
+    out->overall_rms = rms;
+    out->n_images = n_views;
+    out->per_image = static_cast<double *>(
+        std::malloc(sizeof(double) * static_cast<size_t>(n_views)));
+    if (out->per_image == nullptr) {
+      return 0;
+    }
+
+    for (int i = 0; i < n_views; ++i) {
+      cv::Mat projected;
+      cv::projectPoints(object_points[static_cast<size_t>(i)],
+                        rvecs[static_cast<size_t>(i)],
+                        tvecs[static_cast<size_t>(i)], camera_matrix,
+                        dist_coeffs, projected);
+      const double n = static_cast<double>(
+          (std::max)(1, image_points[static_cast<size_t>(i)].rows));
+      out->per_image[i] =
+          cv::norm(image_points[static_cast<size_t>(i)], projected,
+                   cv::NORM_L2) /
+          std::sqrt(n);
+    }
+    return 1;
+  } catch (...) {
+    cvcharuco_calibrate_free(out);
     return 0;
   }
 }

@@ -5,10 +5,12 @@ use charuco_capture_app_lib::detect::{
     MIN_CORNERS,
 };
 use charuco_capture_app_lib::score::{evaluate_frame, SavedFeature, MIN_SHARPNESS};
+use charuco_capture_app_lib::calib::{CalibResult, Shot};
 use charuco_capture_app_lib::session::{
     can_autosave, default_output_root, image_path_for_json, save_jpeg, session_json_value,
-    session_save_error_hint, sharpness, start_session_dir, start_session_dir_named,
-    write_session_json, CapturedImage, SessionConfig, SAVE_COOLDOWN, SAVE_JPEG_QUALITY,
+    session_payload, session_save_error_hint, sharpness, start_session_dir,
+    start_session_dir_named, write_accepted_json, write_session_json, CapturedImage,
+    SessionConfig, SAVE_COOLDOWN, SAVE_JPEG_QUALITY,
 };
 use serde_json::Value;
 
@@ -250,4 +252,37 @@ fn synthetic_board_save_writes_unmarked_jpeg_and_session_json() {
     let stored_path = parsed["images"][0]["path"].as_str().expect("path str");
     assert_eq!(stored_path, abs_path);
     assert!(std::path::Path::new(stored_path).is_absolute(), "{stored_path}");
+}
+
+#[test]
+fn accepted_json_copies_session_with_camera_matrix() {
+    let root = temp_root("accepted");
+    let dir = start_session_dir_named(&root, "20260903_150000").expect("session dir");
+    let config = SessionConfig::default_capture();
+    let shots = vec![Shot {
+        id: 1,
+        quality: 1.0,
+        diversity: 1.0,
+        reproj: Some(0.40),
+        feature: [0.0; 6],
+        corners: vec![[1.0, 2.0]],
+        ids: vec![0],
+        path: "img_001.jpg".into(),
+    }];
+    let calib = CalibResult {
+        camera_matrix: [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
+        dist_coeffs: vec![0.1, 0.0, 0.0, 0.0, 0.0],
+        overall_rms: 0.41,
+        per_image: vec![0.40],
+        mean_reproj: 0.40,
+    };
+    let payload = session_payload(&config, &shots, true, Some(&calib));
+    write_session_json(&dir, &payload).expect("session.json");
+    write_accepted_json(&dir, &payload).expect("accepted.json");
+    let accepted: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("accepted.json")).unwrap()).unwrap();
+    assert_eq!(accepted["accepted"], true);
+    assert_eq!(accepted["cameraMatrix"][2][2], 1.0);
+    assert_eq!(accepted["overallReprojectionError"], 0.41);
+    assert_eq!(accepted["distCoeffs"][0], 0.1);
 }

@@ -10,14 +10,32 @@ interface CameraMode {
   fourcc: string;
 }
 
+export interface SessionParams {
+  count_target: number;
+  score_target: number;
+  square_mm: number;
+  marker_mm: number;
+}
+
 const emit = defineEmits<{
-  'start-capture': [mode: CameraMode];
+  'start-capture': [payload: { mode: CameraMode; session: SessionParams }];
 }>();
 
 const modes = ref<CameraMode[]>([]);
 const selectedKey = ref<string | null>(null);
 const isLoading = ref(false);
 const errorMessage = ref('');
+const countTarget = ref(15);
+const scoreGrade = ref<'A' | 'B' | 'C' | 'D'>('B');
+const squareMm = ref(20);
+const markerMm = ref(15);
+
+const gradeScores: Record<'A' | 'B' | 'C' | 'D', number> = {
+  A: 90,
+  B: 80,
+  C: 70,
+  D: 60,
+};
 
 function modeKey(mode: CameraMode): string {
   return `${mode.dshow_index}|${mode.device_name}|${mode.width}|${mode.height}|${mode.fourcc}`;
@@ -61,7 +79,17 @@ function handleStartCapture(): void {
   if (selectedMode.value === null) {
     return;
   }
-  emit('start-capture', selectedMode.value);
+  const count = Math.max(3, Math.round(Number(countTarget.value) || 15));
+  countTarget.value = count;
+  emit('start-capture', {
+    mode: selectedMode.value,
+    session: {
+      count_target: count,
+      score_target: gradeScores[scoreGrade.value],
+      square_mm: Number(squareMm.value) || 20,
+      marker_mm: Number(markerMm.value) || 15,
+    },
+  });
 }
 
 onMounted(() => {
@@ -75,6 +103,30 @@ onMounted(() => {
       <h1>相机与分辨率</h1>
       <p>必须点选一行后再开始采集。不会预选任何相机。</p>
     </header>
+
+    <section class="setup__params" aria-label="采集参数">
+      <label>
+        目标张数 N
+        <input v-model.number="countTarget" type="number" min="3" step="1" />
+      </label>
+      <label>
+        目标等级
+        <select v-model="scoreGrade">
+          <option value="A">A (90)</option>
+          <option value="B">B (80)</option>
+          <option value="C">C (70)</option>
+          <option value="D">D (60)</option>
+        </select>
+      </label>
+      <label>
+        棋格 mm
+        <input v-model.number="squareMm" type="number" min="1" step="0.5" />
+      </label>
+      <label>
+        Marker mm
+        <input v-model.number="markerMm" type="number" min="1" step="0.5" />
+      </label>
+    </section>
 
     <div class="setup__toolbar">
       <button type="button" class="btn btn--ghost" :disabled="isLoading" @click="loadCameras">
@@ -147,6 +199,29 @@ onMounted(() => {
 .setup__header p {
   margin: 0;
   color: #555;
+}
+
+.setup__params {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem 1rem;
+  margin: 1.25rem 0 0;
+}
+
+.setup__params label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+  color: #444;
+}
+
+.setup__params input,
+.setup__params select {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.95rem;
 }
 
 .setup__toolbar {

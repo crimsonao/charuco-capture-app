@@ -11,19 +11,39 @@ interface CameraMode {
   fourcc: string;
 }
 
+interface SessionParams {
+  count_target: number;
+  score_target: number;
+  square_mm: number;
+  marker_mm: number;
+}
+
+export interface SessionSummary {
+  image_count: number;
+  average_percent: number;
+  mean_reprojection_error: number | null;
+  camera_matrix: number[][];
+  session_dir: string;
+}
+
 const props = defineProps<{
   mode: CameraMode;
+  session: SessionParams;
 }>();
 
 const emit = defineEmits<{
   stop: [];
+  done: [summary: SessionSummary];
 }>();
 
 const jpegSrc = ref('');
 const hint = ref('请把标定板放进画面');
 const nCorners = ref(0);
 const imageCount = ref(0);
-const countTarget = ref(15);
+const countTarget = ref(props.session.count_target);
+const averagePercent = ref(0);
+const meanReproj = ref<number | null>(null);
+const phase = ref('collecting');
 const corners = ref<[number, number][]>([]);
 const actualWidth = ref<number | null>(null);
 const actualHeight = ref<number | null>(null);
@@ -41,18 +61,32 @@ onMounted(async () => {
     corners: [number, number][];
     image_count?: number;
     count_target?: number;
+    phase?: string;
+    average_percent?: number;
+    mean_reprojection_error?: number | null;
   }>('frame', (event) => {
     jpegSrc.value = `data:image/jpeg;base64,${event.payload.jpeg_base64}`;
     hint.value = event.payload.hint;
     nCorners.value = event.payload.n_corners;
     corners.value = event.payload.corners ?? [];
     imageCount.value = event.payload.image_count ?? 0;
-    countTarget.value = event.payload.count_target ?? 15;
+    countTarget.value = event.payload.count_target ?? props.session.count_target;
+    phase.value = event.payload.phase ?? 'collecting';
+    averagePercent.value = event.payload.average_percent ?? 0;
+    meanReproj.value = event.payload.mean_reprojection_error ?? null;
   });
+  const unlistenDone = await listen<SessionSummary>('session-done', (event) => {
+    emit('done', event.payload);
+  });
+  const previous = unlisten;
+  unlisten = async () => {
+    await previous?.();
+    await unlistenDone();
+  };
   try {
     const [width, height, openedBackend] = await invoke<[number, number, string]>(
       'start_preview',
-      { req: props.mode },
+      { req: props.mode, session: props.session },
     );
     actualWidth.value = width;
     actualHeight.value = height;
@@ -99,6 +133,9 @@ async function handleStop(): Promise<void> {
     <p v-else-if="errorMessage" class="capture__status capture__status--error">{{ errorMessage }}</p>
     <p v-else class="capture__status">
       {{ hint }} · 角点 {{ nCorners }} · 已存 {{ imageCount }}/{{ countTarget }}
+      · 平均 {{ averagePercent.toFixed(0) }}
+      · 重投影 {{ meanReproj === null ? '尚未标定' : `${meanReproj.toFixed(3)}px` }}
+      · {{ phase === 'improve' ? '补拍中' : '采集中' }}
     </p>
 
     <div class="capture__frame">

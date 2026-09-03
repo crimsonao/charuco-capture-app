@@ -34,6 +34,12 @@ impl Drop for CharucoBoard {
     }
 }
 
+impl CharucoBoard {
+    pub(crate) fn as_ptr(&self) -> *mut std::ffi::c_void {
+        self.ptr as *mut std::ffi::c_void
+    }
+}
+
 #[repr(C)]
 struct CvCharuco {
     _private: [u8; 0],

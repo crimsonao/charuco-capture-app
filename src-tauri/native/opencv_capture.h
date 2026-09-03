@@ -42,6 +42,26 @@ void cvcharuco_detect_free(CvCharucoDetect *out);
 int cvcharuco_draw(CvFrame *frame, const CvCharucoDetect *det, int enough);
 int cvcharuco_generate(CvCharuco *board, int width, int height, CvFrame *out);
 
+typedef struct CvCalibView {
+  const float *corners;
+  const int *ids;
+  int n_corners;
+} CvCalibView;
+
+typedef struct CvCalibResult {
+  double camera_matrix[9];
+  double dist_coeffs[8];
+  int n_dist;
+  double overall_rms;
+  double *per_image;
+  int n_images;
+} CvCalibResult;
+
+int cvcharuco_calibrate(CvCharuco *board, int width, int height,
+                        const CvCalibView *views, int n_views,
+                        CvCalibResult *out);
+void cvcharuco_calibrate_free(CvCalibResult *out);
+
 #ifdef __cplusplus
 }
 #endif
