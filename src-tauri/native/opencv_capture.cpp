@@ -171,6 +171,34 @@ int cvcam_imencode_jpeg(const CvFrame *frame, int quality, unsigned char **out,
   }
 }
 
+double cvcam_laplacian_var(const CvFrame *frame) {
+  if (frame == nullptr || frame->data == nullptr || frame->width <= 0 ||
+      frame->height <= 0 || frame->channels <= 0) {
+    return 0.0;
+  }
+  try {
+    cv::Mat src = frame_to_mat(frame);
+    cv::Mat gray;
+    if (src.channels() == 1) {
+      gray = src;
+    } else if (src.channels() == 3) {
+      cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
+    } else if (src.channels() == 4) {
+      cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
+    } else {
+      return 0.0;
+    }
+    cv::Mat lap;
+    cv::Laplacian(gray, lap, CV_64F);
+    cv::Scalar mean;
+    cv::Scalar stddev;
+    cv::meanStdDev(lap, mean, stddev);
+    return stddev[0] * stddev[0];
+  } catch (...) {
+    return 0.0;
+  }
+}
+
 void cvcam_bytes_free(unsigned char *ptr) { std::free(ptr); }
 
 void cvcam_release(CvCam *cam) {

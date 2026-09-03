@@ -74,6 +74,7 @@ extern "C" {
         out: *mut CvFrame,
     ) -> i32;
     fn cvcam_frame_free(frame: *mut CvFrame);
+    fn cvcam_laplacian_var(frame: *const CvFrame) -> f64;
 }
 
 /// Fixed 8×6 / `DICT_4X4_50` board. `square_m` / `marker_m` are metres.
@@ -98,6 +99,20 @@ pub fn frame_hint(n_corners: usize) -> String {
     } else {
         "detected".into()
     }
+}
+
+/// Laplacian variance of a BGR or gray frame (`cv2.Laplacian(...).var()`).
+pub fn sharpness(data: &[u8], width: i32, height: i32, channels: i32) -> Result<f64, String> {
+    if data.is_empty() || width <= 0 || height <= 0 || channels <= 0 {
+        return Err("empty frame".into());
+    }
+    let raw = CvFrame {
+        data: data.as_ptr() as *mut u8,
+        width,
+        height,
+        channels,
+    };
+    Ok(unsafe { cvcam_laplacian_var(&raw) })
 }
 
 /// Detect ChArUco corners. `None` when no markers and no interpolated corners.

@@ -13,8 +13,11 @@ use base64::Engine;
 use tauri::{AppHandle, Emitter};
 
 use crate::camera::normalize_fourcc;
-use crate::detect::{
-    detect_charuco, draw_detected, frame_hint, make_board, DEFAULT_MARKER_M, DEFAULT_SQUARE_M,
+use crate::detect::{detect_charuco, draw_detected, frame_hint, make_board};
+use crate::score::{evaluate_frame, SavedFeature};
+use crate::session::{
+    can_autosave, format_grade, save_jpeg, session_json_value, sharpness, start_session_dir,
+    write_session_json, CapturedImage, SessionConfig,
 };
 
 const BLACK_MEAN: f64 = 4.0;
@@ -108,6 +111,8 @@ pub struct FrameEvent {
     pub hint: String,
     pub n_corners: usize,
     pub corners: Vec<[f32; 2]>,
+    pub image_count: usize,
+    pub count_target: usize,
 }
 
 struct PreviewSession {
@@ -434,27 +439,54 @@ pub fn frame_mean(frame: &PreviewFrame) -> f64 {
     frame.mean
 }
 
-fn encode_jpeg_base64(frame: &PreviewFrame) -> Result<String, String> {
+pub fn encode_jpeg_bytes(
+    data: &[u8],
+    width: i32,
+    height: i32,
+    channels: i32,
+    quality: i32,
+) -> Result<Vec<u8>, String> {
     let raw = CvFrame {
-        data: frame.data.as_ptr() as *mut u8,
-        width: frame.width,
-        height: frame.height,
-        channels: frame.channels,
+        data: data.as_ptr() as *mut u8,
+        width,
+        height,
+        channels,
     };
     let mut out = std::ptr::null_mut();
     let mut out_len = 0i32;
-    let ok = unsafe { cvcam_imencode_jpeg(&raw, JPEG_QUALITY, &mut out, &mut out_len) };
+    let ok = unsafe { cvcam_imencode_jpeg(&raw, quality, &mut out, &mut out_len) };
     if ok == 0 || out.is_null() || out_len <= 0 {
         return Err("imencode failed".into());
     }
-    let bytes = unsafe { std::slice::from_raw_parts(out, out_len as usize) };
-    let encoded = STANDARD.encode(bytes);
+    let bytes = unsafe { std::slice::from_raw_parts(out, out_len as usize) }.to_vec();
     unsafe { cvcam_bytes_free(out) };
-    Ok(encoded)
+    Ok(bytes)
+}
+
+fn encode_jpeg_base64(frame: &PreviewFrame) -> Result<String, String> {
+    let bytes = encode_jpeg_bytes(
+        &frame.data,
+        frame.width,
+        frame.height,
+        frame.channels,
+        JPEG_QUALITY,
+    )?;
+    Ok(STANDARD.encode(bytes))
 }
 
 fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc<AtomicBool>) {
-    let board = make_board(DEFAULT_SQUARE_M, DEFAULT_MARKER_M).ok();
+    let config = SessionConfig::default_capture();
+    let board = make_board(
+        (config.square_mm / 1000.0) as f32,
+        (config.marker_mm / 1000.0) as f32,
+    )
+    .ok();
+    let session_dir = start_session_dir(&config.out_root).ok();
+    let mut captures: Vec<CapturedImage> = Vec::new();
+    let mut last_save: Option<Instant> = None;
+    if let Some(dir) = session_dir.as_ref() {
+        let _ = write_session_json(dir, &session_json_value(&config, &captures, false));
+    }
     let mut last_emit = Instant::now()
         .checked_sub(PREVIEW_INTERVAL)
         .unwrap_or_else(Instant::now);
@@ -471,6 +503,7 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
 
         let mut n_corners = 0usize;
         let mut corners = Vec::new();
+        let mut hint = frame_hint(0);
         if let Some(board) = board.as_ref() {
             if let Ok(Some(detected)) = detect_charuco(
                 &frame.data,
@@ -481,6 +514,74 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
             ) {
                 n_corners = detected.corners.len();
                 corners = detected.corners.clone();
+                if !detected.corners.is_empty() {
+                    let sharp = sharpness(
+                        &frame.data,
+                        frame.width,
+                        frame.height,
+                        frame.channels,
+                    )
+                    .unwrap_or(0.0);
+                    let saved: Vec<SavedFeature> = captures
+                        .iter()
+                        .map(|item| SavedFeature {
+                            feature: item.feature,
+                        })
+                        .collect();
+                    let eval = evaluate_frame(
+                        &detected.corners,
+                        frame.width,
+                        frame.height,
+                        sharp,
+                        &saved,
+                    );
+                    hint = eval.hint.clone();
+                    let elapsed = last_save.map(|at| now.duration_since(at));
+                    if let Some(dir) = session_dir.as_ref() {
+                        if can_autosave(
+                            eval.saveable,
+                            elapsed,
+                            captures.len(),
+                            config.count_target,
+                        ) {
+                            match save_jpeg(
+                                dir,
+                                captures.len() + 1,
+                                &frame.data,
+                                frame.width,
+                                frame.height,
+                                frame.channels,
+                            ) {
+                                Ok(path) => {
+                                    captures.push(CapturedImage {
+                                        path: path
+                                            .file_name()
+                                            .map(|name| name.to_string_lossy().into_owned())
+                                            .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+                                        n_corners: detected.corners.len(),
+                                        quality: eval.quality,
+                                        diversity: eval.diversity,
+                                        percent: eval.percent,
+                                        reprojection_error: None,
+                                        feature: eval.feature,
+                                    });
+                                    last_save = Some(now);
+                                    let _ = write_session_json(
+                                        dir,
+                                        &session_json_value(&config, &captures, false),
+                                    );
+                                    hint = format!(
+                                        "已保存 {}/{}  {}",
+                                        captures.len(),
+                                        config.count_target,
+                                        format_grade(eval.percent)
+                                    );
+                                }
+                                Err(err) => hint = err,
+                            }
+                        }
+                    }
+                }
                 let _ = draw_detected(
                     &mut frame.data,
                     frame.width,
@@ -496,11 +597,16 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
         };
         let payload = FrameEvent {
             jpeg_base64,
-            hint: frame_hint(n_corners),
+            hint,
             n_corners,
             corners,
+            image_count: captures.len(),
+            count_target: config.count_target,
         };
         let _ = app.emit("frame", payload);
+    }
+    if let Some(dir) = session_dir.as_ref() {
+        let _ = write_session_json(dir, &session_json_value(&config, &captures, false));
     }
 }
 

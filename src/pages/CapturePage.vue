@@ -22,6 +22,8 @@ const emit = defineEmits<{
 const jpegSrc = ref('');
 const hint = ref('请把标定板放进画面');
 const nCorners = ref(0);
+const imageCount = ref(0);
+const countTarget = ref(15);
 const corners = ref<[number, number][]>([]);
 const actualWidth = ref<number | null>(null);
 const actualHeight = ref<number | null>(null);
@@ -37,11 +39,15 @@ onMounted(async () => {
     hint: string;
     n_corners: number;
     corners: [number, number][];
+    image_count?: number;
+    count_target?: number;
   }>('frame', (event) => {
     jpegSrc.value = `data:image/jpeg;base64,${event.payload.jpeg_base64}`;
     hint.value = event.payload.hint;
     nCorners.value = event.payload.n_corners;
     corners.value = event.payload.corners ?? [];
+    imageCount.value = event.payload.image_count ?? 0;
+    countTarget.value = event.payload.count_target ?? 15;
   });
   try {
     const [width, height, openedBackend] = await invoke<[number, number, string]>(
@@ -91,7 +97,9 @@ async function handleStop(): Promise<void> {
 
     <p v-if="isStarting" class="capture__status">正在打开相机...</p>
     <p v-else-if="errorMessage" class="capture__status capture__status--error">{{ errorMessage }}</p>
-    <p v-else class="capture__status">{{ hint }} · 角点 {{ nCorners }}</p>
+    <p v-else class="capture__status">
+      {{ hint }} · 角点 {{ nCorners }} · 已存 {{ imageCount }}/{{ countTarget }}
+    </p>
 
     <div class="capture__frame">
       <div v-if="jpegSrc" class="capture__stage">

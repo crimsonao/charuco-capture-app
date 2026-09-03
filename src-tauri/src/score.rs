@@ -1,5 +1,8 @@
+use crate::detect::MIN_CORNERS;
+
 pub const REPROJ_GOOD: f64 = 0.40;
 pub const REPROJ_LIMIT: f64 = 1.00;
+pub const MIN_SHARPNESS: f64 = 30.0;
 
 const CORNERS_FOR_FULL_QUALITY: f64 = 20.0;
 const SHARPNESS_GOOD: f64 = 100.0;
@@ -209,6 +212,79 @@ pub fn feature_distance(a: &[f32; 6], b: &[f32; 6]) -> f64 {
         sum += delta * delta;
     }
     sum.sqrt()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedFeature {
+    pub feature: [f32; 6],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameEval {
+    pub saveable: bool,
+    pub quality: f64,
+    pub diversity: f64,
+    pub percent: f64,
+    pub feature: [f32; 6],
+    pub hint: String,
+}
+
+fn min_feature_distance(feature: &[f32; 6], others: &[SavedFeature]) -> f64 {
+    if others.is_empty() {
+        return 1.0;
+    }
+    others
+        .iter()
+        .map(|item| feature_distance(feature, &item.feature))
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn rejected(hint: impl Into<String>, feature: [f32; 6]) -> FrameEval {
+    FrameEval {
+        saveable: false,
+        quality: 0.0,
+        diversity: 0.0,
+        percent: 0.0,
+        feature,
+        hint: hint.into(),
+    }
+}
+
+/// Python `evaluate_frame`: corners / sharpness / pose-diversity gate.
+pub fn evaluate_frame(
+    corners: &[[f32; 2]],
+    width: i32,
+    height: i32,
+    sharp: f64,
+    saved: &[SavedFeature],
+) -> FrameEval {
+    let n_corners = corners.len();
+    if n_corners < MIN_CORNERS {
+        return rejected("角点不足，靠近或摆正标定板", [0.0; 6]);
+    }
+    if sharp < MIN_SHARPNESS {
+        return rejected("画面过糊，请持稳或改善光线", [0.0; 6]);
+    }
+    let feature = board_feature(corners, width, height);
+    let min_dist = min_feature_distance(&feature, saved);
+    let threshold = diversity_threshold(saved.len());
+    if !saved.is_empty() && min_dist < threshold {
+        return rejected(
+            format!("姿态太接近已存图（差异 {min_dist:.2} / 需 {threshold:.2}），请加大倾角或换远近"),
+            feature,
+        );
+    }
+    let quality = quality_unit(n_corners, sharp);
+    let diversity = diversity_unit(min_dist, !saved.is_empty());
+    let percent = preview_percent(quality, diversity);
+    FrameEval {
+        saveable: true,
+        quality,
+        diversity,
+        percent,
+        feature,
+        hint: format!("可采集 {percent:.0} 分"),
+    }
 }
 
 #[cfg(test)]
