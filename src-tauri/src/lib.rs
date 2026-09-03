@@ -1,3 +1,4 @@
+pub mod calib;
 pub mod score;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
