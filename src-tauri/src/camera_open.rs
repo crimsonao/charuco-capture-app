@@ -16,8 +16,9 @@ use crate::camera::normalize_fourcc;
 use crate::detect::{detect_charuco, draw_detected, frame_hint, make_board};
 use crate::score::{evaluate_frame, SavedFeature};
 use crate::session::{
-    can_autosave, format_grade, save_jpeg, session_json_value, sharpness, start_session_dir,
-    write_session_json, CapturedImage, SessionConfig,
+    can_autosave, format_grade, image_path_for_json, save_jpeg, session_json_value,
+    session_save_error_hint, sharpness, start_session_dir, write_session_json, CapturedImage,
+    SessionConfig,
 };
 
 const BLACK_MEAN: f64 = 4.0;
@@ -481,7 +482,10 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
         (config.marker_mm / 1000.0) as f32,
     )
     .ok();
-    let session_dir = start_session_dir(&config.out_root).ok();
+    let (session_dir, session_dir_error) = match start_session_dir(&config.out_root) {
+        Ok(dir) => (Some(dir), None),
+        Err(err) => (None, Some(err)),
+    };
     let mut captures: Vec<CapturedImage> = Vec::new();
     let mut last_save: Option<Instant> = None;
     if let Some(dir) = session_dir.as_ref() {
@@ -554,10 +558,7 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
                             ) {
                                 Ok(path) => {
                                     captures.push(CapturedImage {
-                                        path: path
-                                            .file_name()
-                                            .map(|name| name.to_string_lossy().into_owned())
-                                            .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+                                        path: image_path_for_json(&path),
                                         n_corners: detected.corners.len(),
                                         quality: eval.quality,
                                         diversity: eval.diversity,
@@ -590,6 +591,15 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
                     &detected,
                 );
             }
+        }
+
+        if let Some(err) = session_dir_error.as_ref() {
+            let save_hint = session_save_error_hint(err);
+            hint = if hint == frame_hint(0) {
+                save_hint
+            } else {
+                format!("{save_hint}  {hint}")
+            };
         }
 
         let Ok(jpeg_base64) = encode_jpeg_base64(&frame) else {

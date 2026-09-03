@@ -6,9 +6,9 @@ use charuco_capture_app_lib::detect::{
 };
 use charuco_capture_app_lib::score::{evaluate_frame, SavedFeature, MIN_SHARPNESS};
 use charuco_capture_app_lib::session::{
-    can_autosave, default_output_root, save_jpeg, session_json_value, sharpness, start_session_dir,
-    start_session_dir_named, write_session_json, CapturedImage, SessionConfig, SAVE_COOLDOWN,
-    SAVE_JPEG_QUALITY,
+    can_autosave, default_output_root, image_path_for_json, save_jpeg, session_json_value,
+    session_save_error_hint, sharpness, start_session_dir, start_session_dir_named,
+    write_session_json, CapturedImage, SessionConfig, SAVE_COOLDOWN, SAVE_JPEG_QUALITY,
 };
 use serde_json::Value;
 
@@ -67,6 +67,34 @@ fn start_session_dir_name_matches_python_pattern() {
     assert!(stamp[..8].chars().all(|c| c.is_ascii_digit()), "{name}");
     assert!(stamp[9..].chars().all(|c| c.is_ascii_digit()), "{name}");
     assert!(dir.is_dir());
+}
+
+#[test]
+fn start_session_dir_fails_when_parent_is_a_file() {
+    let root = temp_root("file-parent");
+    let blocker = root.join("not_a_dir");
+    std::fs::write(&blocker, b"x").expect("blocker file");
+    let err = start_session_dir_named(&blocker, "20260903_120000").unwrap_err();
+    assert!(err.contains("create session dir"), "{err}");
+}
+
+#[test]
+fn session_save_error_hint_prefixes_user_message() {
+    let hint = session_save_error_hint("create session dir: permission denied");
+    assert!(hint.starts_with("无法保存："), "{hint}");
+    assert!(hint.contains("permission denied"), "{hint}");
+}
+
+#[test]
+fn image_path_for_json_is_absolute() {
+    let root = temp_root("abs-path");
+    let dir = start_session_dir_named(&root, "20260903_120000").expect("session dir");
+    let jpeg_path = dir.join("img_001.jpg");
+    std::fs::write(&jpeg_path, b"fake").expect("write jpeg");
+    let json_path = image_path_for_json(&jpeg_path);
+    assert!(std::path::Path::new(&json_path).is_absolute(), "{json_path}");
+    assert!(json_path.ends_with("img_001.jpg"), "{json_path}");
+    assert!(json_path.contains("session_20260903_120000"), "{json_path}");
 }
 
 #[test]
@@ -201,12 +229,9 @@ fn synthetic_board_save_writes_unmarked_jpeg_and_session_json() {
     assert_eq!(SAVE_JPEG_QUALITY, 95);
 
     let config = SessionConfig::default_capture();
+    let abs_path = image_path_for_json(&jpeg_path);
     let images = vec![CapturedImage {
-        path: jpeg_path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned(),
+        path: abs_path.clone(),
         n_corners: detected.corners.len(),
         quality: eval.quality,
         diversity: eval.diversity,
@@ -222,4 +247,7 @@ fn synthetic_board_save_writes_unmarked_jpeg_and_session_json() {
     assert_eq!(parsed["countTarget"], 15);
     assert_eq!(parsed["scoreTarget"], 80.0);
     assert_eq!(parsed["images"][0]["reprojectionError"], Value::Null);
+    let stored_path = parsed["images"][0]["path"].as_str().expect("path str");
+    assert_eq!(stored_path, abs_path);
+    assert!(std::path::Path::new(stored_path).is_absolute(), "{stored_path}");
 }
