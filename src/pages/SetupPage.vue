@@ -10,6 +10,10 @@ interface CameraMode {
   fourcc: string;
 }
 
+const emit = defineEmits<{
+  'start-capture': [mode: CameraMode];
+}>();
+
 const modes = ref<CameraMode[]>([]);
 const selectedKey = ref<string | null>(null);
 const isLoading = ref(false);
@@ -54,9 +58,10 @@ function handleRowKeydown(event: KeyboardEvent, mode: CameraMode): void {
 }
 
 function handleStartCapture(): void {
-  if (!canStartCapture.value) {
+  if (selectedMode.value === null) {
     return;
   }
+  emit('start-capture', selectedMode.value);
 }
 
 onMounted(() => {

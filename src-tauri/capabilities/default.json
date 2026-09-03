@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "shell:allow-open",
-    "allow-list-cameras"
+    "allow-list-cameras",
+    "allow-preview"
   ]
 }

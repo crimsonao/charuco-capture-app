@@ -2,3 +2,8 @@
 identifier = "allow-list-cameras"
 description = "Allows listing DirectShow camera modes"
 commands.allow = ["list_cameras"]
+
+[[permission]]
+identifier = "allow-preview"
+description = "Allows starting and stopping camera preview"
+commands.allow = ["start_preview", "stop_session"]
