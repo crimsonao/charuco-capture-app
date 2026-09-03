@@ -13,6 +13,9 @@ use base64::Engine;
 use tauri::{AppHandle, Emitter};
 
 use crate::camera::normalize_fourcc;
+use crate::detect::{
+    detect_charuco, draw_detected, frame_hint, make_board, DEFAULT_MARKER_M, DEFAULT_SQUARE_M,
+};
 
 const BLACK_MEAN: f64 = 4.0;
 const MIN_FRAME_EDGE: i32 = 16;
@@ -54,7 +57,7 @@ pub struct PreviewFrame {
     pub height: i32,
     pub channels: i32,
     pub mean: f64,
-    data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 struct CameraHandle {
@@ -104,6 +107,7 @@ pub struct FrameEvent {
     pub jpeg_base64: String,
     pub hint: String,
     pub n_corners: usize,
+    pub corners: Vec<[f32; 2]>,
 }
 
 struct PreviewSession {
@@ -450,11 +454,12 @@ fn encode_jpeg_base64(frame: &PreviewFrame) -> Result<String, String> {
 }
 
 fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc<AtomicBool>) {
+    let board = make_board(DEFAULT_SQUARE_M, DEFAULT_MARKER_M).ok();
     let mut last_emit = Instant::now()
         .checked_sub(PREVIEW_INTERVAL)
         .unwrap_or_else(Instant::now);
     while !stop.load(Ordering::SeqCst) {
-        let Ok(frame) = opened.read_frame() else {
+        let Ok(mut frame) = opened.read_frame() else {
             thread::sleep(Duration::from_millis(20));
             continue;
         };
@@ -463,13 +468,37 @@ fn run_preview_loop(opened: &mut OpenedCam, app: AppHandle, stop: std::sync::Arc
             continue;
         }
         last_emit = now;
+
+        let mut n_corners = 0usize;
+        let mut corners = Vec::new();
+        if let Some(board) = board.as_ref() {
+            if let Ok(Some(detected)) = detect_charuco(
+                &frame.data,
+                frame.width,
+                frame.height,
+                frame.channels,
+                board,
+            ) {
+                n_corners = detected.corners.len();
+                corners = detected.corners.clone();
+                let _ = draw_detected(
+                    &mut frame.data,
+                    frame.width,
+                    frame.height,
+                    frame.channels,
+                    &detected,
+                );
+            }
+        }
+
         let Ok(jpeg_base64) = encode_jpeg_base64(&frame) else {
             continue;
         };
         let payload = FrameEvent {
             jpeg_base64,
-            hint: "preview".into(),
-            n_corners: 0,
+            hint: frame_hint(n_corners),
+            n_corners,
+            corners,
         };
         let _ = app.emit("frame", payload);
     }

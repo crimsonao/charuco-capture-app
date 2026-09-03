@@ -24,6 +24,23 @@ int cvcam_imencode_jpeg(const CvFrame *frame, int quality, unsigned char **out,
 void cvcam_bytes_free(unsigned char *ptr);
 void cvcam_release(CvCam *cam);
 
+typedef struct CvCharuco CvCharuco;
+
+typedef struct CvCharucoDetect {
+  float *corners;
+  int *ids;
+  int n_corners;
+  float *marker_corners;
+  int n_markers;
+} CvCharucoDetect;
+
+CvCharuco *cvcharuco_create(float square_m, float marker_m);
+void cvcharuco_free(CvCharuco *board);
+int cvcharuco_detect(CvCharuco *board, const CvFrame *frame, CvCharucoDetect *out);
+void cvcharuco_detect_free(CvCharucoDetect *out);
+int cvcharuco_draw(CvFrame *frame, const CvCharucoDetect *det, int enough);
+int cvcharuco_generate(CvCharuco *board, int width, int height, CvFrame *out);
+
 #ifdef __cplusplus
 }
 #endif

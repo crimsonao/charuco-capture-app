@@ -1,12 +1,49 @@
 #include "opencv_capture.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/objdetect.hpp>
 #include <opencv2/videoio.hpp>
+
+namespace {
+
+constexpr int kBoardSquaresX = 6;
+constexpr int kBoardSquaresY = 8;
+
+struct CvCharucoImpl {
+  cv::aruco::ArucoDetector detector;
+  cv::aruco::CharucoDetector charuco;
+};
+
+cv::Mat frame_to_mat(const CvFrame *frame) {
+  const int type = frame->channels == 1   ? CV_8UC1
+                   : frame->channels == 4 ? CV_8UC4
+                                          : CV_8UC3;
+  return cv::Mat(frame->height, frame->width, type, frame->data);
+}
+
+int copy_mat_to_frame(const cv::Mat &mat, CvFrame *out) {
+  cv::Mat continuous = mat.isContinuous() ? mat : mat.clone();
+  const size_t nbytes = continuous.total() * continuous.elemSize();
+  auto *data = static_cast<unsigned char *>(std::malloc(nbytes));
+  if (data == nullptr) {
+    return 0;
+  }
+  std::memcpy(data, continuous.data, nbytes);
+  out->data = data;
+  out->width = continuous.cols;
+  out->height = continuous.rows;
+  out->channels = continuous.channels();
+  return 1;
+}
+
+} // namespace
 
 extern "C" {
 
@@ -145,6 +182,204 @@ void cvcam_release(CvCam *cam) {
     cap->release();
     delete cap;
   } catch (...) {
+  }
+}
+
+CvCharuco *cvcharuco_create(float square_m, float marker_m) {
+  if (square_m <= 0.0f || marker_m <= 0.0f || marker_m >= square_m) {
+    return nullptr;
+  }
+  try {
+    const cv::aruco::Dictionary dictionary =
+        cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
+    const cv::aruco::CharucoBoard board(
+        cv::Size(kBoardSquaresX, kBoardSquaresY), square_m, marker_m,
+        dictionary);
+    return reinterpret_cast<CvCharuco *>(
+        new CvCharucoImpl{cv::aruco::ArucoDetector(dictionary),
+                          cv::aruco::CharucoDetector(board)});
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void cvcharuco_free(CvCharuco *board) {
+  if (board == nullptr) {
+    return;
+  }
+  delete reinterpret_cast<CvCharucoImpl *>(board);
+}
+
+int cvcharuco_detect(CvCharuco *board, const CvFrame *frame,
+                     CvCharucoDetect *out) {
+  if (out != nullptr) {
+    out->corners = nullptr;
+    out->ids = nullptr;
+    out->n_corners = 0;
+    out->marker_corners = nullptr;
+    out->n_markers = 0;
+  }
+  if (board == nullptr || frame == nullptr || frame->data == nullptr ||
+      out == nullptr || frame->width <= 0 || frame->height <= 0) {
+    return 0;
+  }
+  try {
+    auto *state = reinterpret_cast<CvCharucoImpl *>(board);
+    cv::Mat src = frame_to_mat(frame);
+    cv::Mat gray;
+    if (src.channels() == 1) {
+      gray = src;
+    } else if (src.channels() == 3) {
+      cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
+    } else if (src.channels() == 4) {
+      cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
+    } else {
+      return 0;
+    }
+
+    std::vector<std::vector<cv::Point2f>> marker_corners;
+    std::vector<int> marker_ids;
+    state->detector.detectMarkers(gray, marker_corners, marker_ids);
+
+    if (!marker_ids.empty()) {
+      const cv::TermCriteria criteria(
+          cv::TermCriteria::EPS + cv::TermCriteria::MAX_ITER, 100, 0.001);
+      for (auto &corner : marker_corners) {
+        cv::cornerSubPix(gray, corner, cv::Size(5, 5), cv::Size(-1, -1),
+                         criteria);
+      }
+    }
+
+    std::vector<cv::Point2f> charuco_corners;
+    std::vector<int> charuco_ids;
+    if (!marker_ids.empty()) {
+      // OpenCV 4.12 dropped interpolateCornersCharuco; detectBoard with
+      // pre-detected markers is the equivalent interpolation step.
+      state->charuco.detectBoard(gray, charuco_corners, charuco_ids,
+                                 marker_corners, marker_ids);
+    }
+
+    if (!charuco_corners.empty()) {
+      const size_t n = charuco_corners.size();
+      const size_t n_ids = (std::min)(n, charuco_ids.size());
+      out->n_corners = static_cast<int>(n);
+      out->corners =
+          static_cast<float *>(std::malloc(sizeof(float) * 2 * n));
+      out->ids = static_cast<int *>(std::malloc(sizeof(int) * n));
+      if (out->corners == nullptr || out->ids == nullptr) {
+        cvcharuco_detect_free(out);
+        return 0;
+      }
+      for (size_t i = 0; i < n; ++i) {
+        out->corners[i * 2] = charuco_corners[i].x;
+        out->corners[i * 2 + 1] = charuco_corners[i].y;
+        out->ids[i] = i < n_ids ? charuco_ids[i] : -1;
+      }
+    }
+
+    if (!marker_corners.empty()) {
+      out->n_markers = static_cast<int>(marker_corners.size());
+      out->marker_corners = static_cast<float *>(
+          std::malloc(sizeof(float) * 8 * marker_corners.size()));
+      if (out->marker_corners == nullptr) {
+        cvcharuco_detect_free(out);
+        return 0;
+      }
+      for (size_t i = 0; i < marker_corners.size(); ++i) {
+        for (int c = 0; c < 4; ++c) {
+          const cv::Point2f pt =
+              c < static_cast<int>(marker_corners[i].size())
+                  ? marker_corners[i][static_cast<size_t>(c)]
+                  : cv::Point2f();
+          out->marker_corners[i * 8 + c * 2] = pt.x;
+          out->marker_corners[i * 8 + c * 2 + 1] = pt.y;
+        }
+      }
+    }
+    return 1;
+  } catch (...) {
+    cvcharuco_detect_free(out);
+    return 0;
+  }
+}
+
+void cvcharuco_detect_free(CvCharucoDetect *out) {
+  if (out == nullptr) {
+    return;
+  }
+  std::free(out->corners);
+  std::free(out->ids);
+  std::free(out->marker_corners);
+  out->corners = nullptr;
+  out->ids = nullptr;
+  out->n_corners = 0;
+  out->marker_corners = nullptr;
+  out->n_markers = 0;
+}
+
+int cvcharuco_draw(CvFrame *frame, const CvCharucoDetect *det, int enough) {
+  if (frame == nullptr || frame->data == nullptr || det == nullptr ||
+      frame->channels < 3) {
+    return 0;
+  }
+  try {
+    cv::Mat src = frame_to_mat(frame);
+    if (det->n_markers > 0 && det->marker_corners != nullptr) {
+      std::vector<std::vector<cv::Point2f>> marker_corners(
+          static_cast<size_t>(det->n_markers));
+      for (int i = 0; i < det->n_markers; ++i) {
+        marker_corners[static_cast<size_t>(i)].resize(4);
+        for (int c = 0; c < 4; ++c) {
+          marker_corners[static_cast<size_t>(i)][static_cast<size_t>(c)] =
+              cv::Point2f(det->marker_corners[i * 8 + c * 2],
+                          det->marker_corners[i * 8 + c * 2 + 1]);
+        }
+      }
+      cv::aruco::drawDetectedMarkers(src, marker_corners);
+    }
+    if (det->n_corners > 0 && det->corners != nullptr) {
+      std::vector<cv::Point2f> corners(static_cast<size_t>(det->n_corners));
+      for (int i = 0; i < det->n_corners; ++i) {
+        corners[static_cast<size_t>(i)] =
+            cv::Point2f(det->corners[i * 2], det->corners[i * 2 + 1]);
+      }
+      const cv::Rect box = cv::boundingRect(corners);
+      const cv::Scalar color =
+          enough ? cv::Scalar(0, 220, 0) : cv::Scalar(0, 200, 255);
+      cv::rectangle(src, box, color, 2);
+      cv::Mat corner_mat(det->n_corners, 1, CV_32FC2, det->corners);
+      cv::Mat ids_mat;
+      if (det->ids != nullptr) {
+        ids_mat = cv::Mat(det->n_corners, 1, CV_32SC1, det->ids);
+      }
+      cv::aruco::drawDetectedCornersCharuco(src, corner_mat, ids_mat, color);
+    }
+    return 1;
+  } catch (...) {
+    return 0;
+  }
+}
+
+int cvcharuco_generate(CvCharuco *board, int width, int height, CvFrame *out) {
+  if (out != nullptr) {
+    out->data = nullptr;
+    out->width = 0;
+    out->height = 0;
+    out->channels = 0;
+  }
+  if (board == nullptr || out == nullptr || width < 32 || height < 32) {
+    return 0;
+  }
+  try {
+    auto *state = reinterpret_cast<CvCharucoImpl *>(board);
+    cv::Mat img;
+    state->charuco.getBoard().generateImage(cv::Size(width, height), img, 24);
+    if (img.empty()) {
+      return 0;
+    }
+    return copy_mat_to_frame(img, out);
+  } catch (...) {
+    return 0;
   }
 }
 

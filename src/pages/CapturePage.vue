@@ -20,8 +20,9 @@ const emit = defineEmits<{
 }>();
 
 const jpegSrc = ref('');
-const hint = ref('preview');
+const hint = ref('请把标定板放进画面');
 const nCorners = ref(0);
+const corners = ref<[number, number][]>([]);
 const actualWidth = ref<number | null>(null);
 const actualHeight = ref<number | null>(null);
 const backend = ref('');
@@ -31,14 +32,17 @@ const isStarting = ref(true);
 let unlisten: UnlistenFn | undefined;
 
 onMounted(async () => {
-  unlisten = await listen<{ jpeg_base64: string; hint: string; n_corners: number }>(
-    'frame',
-    (event) => {
-      jpegSrc.value = `data:image/jpeg;base64,${event.payload.jpeg_base64}`;
-      hint.value = event.payload.hint;
-      nCorners.value = event.payload.n_corners;
-    },
-  );
+  unlisten = await listen<{
+    jpeg_base64: string;
+    hint: string;
+    n_corners: number;
+    corners: [number, number][];
+  }>('frame', (event) => {
+    jpegSrc.value = `data:image/jpeg;base64,${event.payload.jpeg_base64}`;
+    hint.value = event.payload.hint;
+    nCorners.value = event.payload.n_corners;
+    corners.value = event.payload.corners ?? [];
+  });
   try {
     const [width, height, openedBackend] = await invoke<[number, number, string]>(
       'start_preview',
@@ -90,12 +94,32 @@ async function handleStop(): Promise<void> {
     <p v-else class="capture__status">{{ hint }} · 角点 {{ nCorners }}</p>
 
     <div class="capture__frame">
-      <img
-        v-if="jpegSrc"
-        :src="jpegSrc"
-        :alt="`${mode.device_name} preview`"
-        class="capture__image"
-      />
+      <div v-if="jpegSrc" class="capture__stage">
+        <img
+          :src="jpegSrc"
+          :alt="`${mode.device_name} preview`"
+          class="capture__image"
+        />
+        <svg
+          v-if="corners.length && actualWidth && actualHeight"
+          class="capture__overlay"
+          :viewBox="`0 0 ${actualWidth} ${actualHeight}`"
+          preserveAspectRatio="xMidYMid meet"
+          aria-hidden="true"
+        >
+          <rect
+            v-for="(pt, index) in corners"
+            :key="index"
+            :x="pt[0] - 6"
+            :y="pt[1] - 6"
+            width="12"
+            height="12"
+            fill="none"
+            :stroke="nCorners >= 6 ? '#00dc00' : '#00c8ff'"
+            stroke-width="2"
+          />
+        </svg>
+      </div>
       <p v-else-if="!isStarting && !errorMessage" class="capture__status">等待画面...</p>
     </div>
   </main>
@@ -155,9 +179,23 @@ async function handleStop(): Promise<void> {
   overflow: hidden;
 }
 
+.capture__stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
 .capture__image {
   max-width: 100%;
   max-height: 70vh;
   display: block;
+}
+
+.capture__overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 </style>

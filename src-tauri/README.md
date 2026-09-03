@@ -1,0 +1,53 @@
+# src-tauri OpenCV link
+
+ChArUco detection and camera I/O use a small C++ FFI (`native/opencv_capture.cpp`) compiled by `build.rs` (`cc` crate) and linked against **OpenCV 4.12 `opencv_world4120`**. The Rust `opencv` crate is **not** used: it needs libclang, which is not installed on this machine.
+
+## Why not `opencv4[contrib]` / the Rust crate
+
+Official OpenCV **4.7+** moved ArUco / ChArUco from contrib into **`objdetect`**. The world DLL at `OPENCV_DIR` already exports:
+
+- `cv::aruco::ArucoDetector::detectMarkers`
+- `cv::aruco::CharucoDetector::detectBoard` (4.12 replacement for `interpolateCornersCharuco`)
+- `cv::aruco::CharucoBoard` (`Size(6, 8)` squares, `DICT_4X4_50`)
+
+No extra `opencv_contrib` or `opencv_aruco*.lib` is required for this official 4.12 world build.
+
+If you rebuild against an **older** OpenCV (≤ 4.6) whose world DLL has **no** objdetect ArUco:
+
+1. Install LLVM (libclang) and vcpkg `opencv4[contrib]`.
+2. Point the Rust `opencv` crate at it with `OPENCV_INCLUDE_PATHS` / `OPENCV_LINK_PATHS` / `OPENCV_LINK_LIBS` (typically `opencv_world4` plus contrib, or the split `opencv_aruco4` lib).
+3. Or keep this FFI and add the contrib include + `opencv_aruco` / contrib world lib in `build.rs`.
+
+## This machine (actual link)
+
+`build.rs` defaults `OPENCV_DIR` to:
+
+```
+C:\Users\50429\Desktop\mark\centerExtration\opencv\build
+```
+
+Override with the env var `OPENCV_DIR` (the directory that contains `include\` and `x64\vc16\lib\`).
+
+Link steps that actually ran:
+
+| Step | Value |
+| --- | --- |
+| Include | `%OPENCV_DIR%\include` (`opencv2/objdetect.hpp`, `charuco_detector.hpp`) |
+| Lib search | `%OPENCV_DIR%\x64\vc16\lib` |
+| Link lib | `opencv_world4120` (no separate aruco / contrib lib) |
+| C++ | `native/opencv_capture.cpp` → static lib `opencv_capture` |
+| Runtime DLL | `%OPENCV_DIR%\x64\vc16\bin\opencv_world4120.dll` copied next to the cargo target exe |
+
+`OPENCV_INCLUDE_PATHS` / `OPENCV_LINK_LIBS` are **not** read; this project does not compile the `opencv` crate.
+
+## Runtime
+
+Put `opencv_world4120.dll` on `PATH` or next to the exe (`build.rs` copies it into the cargo target dir). Example:
+
+```bat
+set PATH=C:\Users\50429\Desktop\mark\centerExtration\opencv\build\x64\vc16\bin;%PATH%
+cd src-tauri
+cargo test --test detect_test
+```
+
+Board is fixed **8×6 squares** (`Size(6, 8)`), **`DICT_4X4_50`**, `MIN_CORNERS = 6`. Default geometry matches the Python tool: square 20 mm, marker 15 mm.

@@ -1,6 +1,7 @@
 pub mod calib;
 pub mod camera;
 pub mod camera_open;
+pub mod detect;
 pub mod score;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
