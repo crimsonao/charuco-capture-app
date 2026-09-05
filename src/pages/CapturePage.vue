@@ -4,11 +4,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 interface CameraMode {
-  device_name: string;
-  dshow_index: number;
-  width: number;
-  height: number;
-  fourcc: string;
+  device_name: string
+  dshow_index: number
+  width: number
+  height: number
+  fourcc: string
+  fps: number
 }
 
 interface SessionParams {

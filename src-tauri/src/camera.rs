@@ -22,6 +22,7 @@ pub struct CameraMode {
     pub width: i32,
     pub height: i32,
     pub fourcc: String,
+    pub fps: i32,
 }
 
 /// One `IAMStreamConfig::GetStreamCaps` slot.
@@ -33,6 +34,8 @@ pub struct StreamCapSlot {
     pub header_width: i32,
     pub header_height: i32,
     pub subtype_label: String,
+    /// `VIDEOINFOHEADER.AvgTimePerFrame` in 100-ns units; 0 if unknown.
+    pub avg_time_per_frame: i64,
     pub range_min_width: i32,
     pub range_min_height: i32,
     pub range_max_width: i32,
@@ -83,11 +86,22 @@ pub fn normalize_fourcc(label: &str) -> String {
     }
 }
 
+/// Convert DirectShow `AvgTimePerFrame` (100-ns units) to integer FPS.
+pub fn fps_from_avg_time_per_frame(avg_time_per_frame_hns: i64) -> i32 {
+    if avg_time_per_frame_hns <= 0 {
+        return 0;
+    }
+    let fps = 10_000_000.0 / (avg_time_per_frame_hns as f64);
+    fps.round() as i32
+}
+
 /// Matches `dshow_enum.py` `_prefer_larger_modes`.
-pub fn prefer_larger_modes(modes: Vec<(i32, i32, String)>) -> Vec<(i32, i32, String)> {
-    let large: Vec<(i32, i32, String)> = modes
+pub fn prefer_larger_modes(
+    modes: Vec<(i32, i32, String, i32)>,
+) -> Vec<(i32, i32, String, i32)> {
+    let large: Vec<(i32, i32, String, i32)> = modes
         .iter()
-        .filter(|(width, height, _)| *width >= 640 && *height >= 480)
+        .filter(|(width, height, _, _)| *width >= 640 && *height >= 480)
         .cloned()
         .collect();
     if large.is_empty() {
@@ -97,11 +111,11 @@ pub fn prefer_larger_modes(modes: Vec<(i32, i32, String)>) -> Vec<(i32, i32, Str
     }
 }
 
-/// Keep only discrete VIDEOINFOHEADER width/height + FOURCC.
+/// Keep only discrete VIDEOINFOHEADER width/height + FOURCC + FPS.
 /// `range_*` on each slot is intentionally unused.
-pub fn collect_discrete_modes(slots: &[StreamCapSlot]) -> Vec<(i32, i32, String)> {
-    let mut found: Vec<(i32, i32, String)> = Vec::new();
-    let mut seen: HashSet<(i32, i32, String)> = HashSet::new();
+pub fn collect_discrete_modes(slots: &[StreamCapSlot]) -> Vec<(i32, i32, String, i32)> {
+    let mut found: Vec<(i32, i32, String, i32)> = Vec::new();
+    let mut seen: HashSet<(i32, i32, String, i32)> = HashSet::new();
     for slot in slots {
         let _ = (
             slot.range_min_width,
@@ -120,7 +134,8 @@ pub fn collect_discrete_modes(slots: &[StreamCapSlot]) -> Vec<(i32, i32, String)
         let Some(fourcc) = discrete_fourcc(&slot.subtype_label) else {
             continue;
         };
-        let key = (width, height, fourcc);
+        let fps = fps_from_avg_time_per_frame(slot.avg_time_per_frame);
+        let key = (width, height, fourcc, fps);
         if seen.contains(&key) {
             continue;
         }
@@ -232,13 +247,14 @@ fn enumerate_video_devices() -> Result<Vec<CameraMode>, String> {
             Ok(filter) => read_filter_modes(&filter),
             Err(_) => Vec::new(),
         };
-        for (width, height, fourcc) in device_modes {
+        for (width, height, fourcc, fps) in device_modes {
             modes.push(CameraMode {
                 device_name: device_name.clone(),
                 dshow_index,
                 width,
                 height,
                 fourcc,
+                fps,
             });
         }
         dshow_index += 1;
@@ -276,7 +292,7 @@ fn friendly_name(moniker: &windows::Win32::System::Com::IMoniker) -> Option<Stri
 #[cfg(windows)]
 fn read_filter_modes(
     filter: &windows::Win32::Media::DirectShow::IBaseFilter,
-) -> Vec<(i32, i32, String)> {
+) -> Vec<(i32, i32, String, i32)> {
     use windows::core::Interface;
     use windows::Win32::Media::DirectShow::{IAMStreamConfig, IPin, PINDIR_OUTPUT};
 
@@ -353,6 +369,7 @@ unsafe fn parse_videoinfo_slot(
     let format_is_video_info = mt.formattype == FORMAT_VideoInfo;
     let mut header_width = 0i32;
     let mut header_height = 0i32;
+    let mut avg_time_per_frame = 0i64;
     if format_is_video_info
         && !mt.pbFormat.is_null()
         && mt.cbFormat as usize >= std::mem::size_of::<VIDEOINFOHEADER>()
@@ -360,12 +377,14 @@ unsafe fn parse_videoinfo_slot(
         let header = &*(mt.pbFormat as *const VIDEOINFOHEADER);
         header_width = header.bmiHeader.biWidth;
         header_height = header.bmiHeader.biHeight;
+        avg_time_per_frame = header.AvgTimePerFrame;
     }
     Some(StreamCapSlot {
         format_is_video_info,
         header_width,
         header_height,
         subtype_label: fourcc_label_from_guid(mt.subtype),
+        avg_time_per_frame,
         range_min_width: 0,
         range_min_height: 0,
         range_max_width: 0,

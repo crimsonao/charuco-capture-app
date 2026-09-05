@@ -3,11 +3,12 @@ import { computed, onMounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
 interface CameraMode {
-  device_name: string;
-  dshow_index: number;
-  width: number;
-  height: number;
-  fourcc: string;
+  device_name: string
+  dshow_index: number
+  width: number
+  height: number
+  fourcc: string
+  fps: number
 }
 
 export interface SessionParams {
@@ -44,7 +45,7 @@ const gradeScores: Record<'A' | 'B' | 'C' | 'D', number> = {
 };
 
 function modeKey(mode: CameraMode): string {
-  return `${mode.dshow_index}|${mode.device_name}|${mode.width}|${mode.height}|${mode.fourcc}`;
+  return `${mode.dshow_index}|${mode.device_name}|${mode.width}|${mode.height}|${mode.fourcc}|${mode.fps}`
 }
 
 const selectedMode = computed(() => {
@@ -187,6 +188,7 @@ onMounted(() => {
             <th scope="col">DirectShow 索引</th>
             <th scope="col">分辨率</th>
             <th scope="col">格式</th>
+            <th scope="col">FPS</th>
           </tr>
         </thead>
         <tbody>
@@ -197,7 +199,7 @@ onMounted(() => {
             :aria-selected="selectedKey === modeKey(mode)"
             tabindex="0"
             role="button"
-            :aria-label="`${mode.device_name} ${mode.width}x${mode.height} ${mode.fourcc}`"
+            :aria-label="`${mode.device_name} ${mode.width}x${mode.height} ${mode.fourcc} ${mode.fps}fps`"
             @click="handleSelectRow(mode)"
             @keydown="handleRowKeydown($event, mode)"
           >
@@ -205,6 +207,7 @@ onMounted(() => {
             <td>{{ mode.dshow_index }}</td>
             <td>{{ mode.width }}x{{ mode.height }}</td>
             <td>{{ mode.fourcc }}</td>
+            <td>{{ mode.fps }}</td>
           </tr>
         </tbody>
       </table>
