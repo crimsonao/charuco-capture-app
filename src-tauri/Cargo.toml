@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "ChArUco calibration desktop client"
 authors = ["you"]
 edition = "2021"
+default-run = "charuco-capture-app"
 
 [lib]
 name = "charuco_capture_app_lib"
@@ -31,6 +32,7 @@ windows = { version = "0.61", features = [
     "Win32_System_Ole",
     "Win32_System_Variant",
 ] }
+windows-core = "0.61"
 
 [profile.release]
 panic = "abort"
