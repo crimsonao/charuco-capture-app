@@ -67,6 +67,20 @@ pnpm install
 pnpm tauri dev
 ```
 
+`pnpm tauri dev` starts the desktop window (`src/main.rs`). Do not put camera harness binaries under `src-tauri/src/bin/` — Cargo would run them instead of the UI.
+
+Camera open uses native DirectShow, then native Media Foundation, then OpenCV
+`VideoCapture` as fallback. Setup lists discrete modes with FPS; Start capture
+requests that FPS on open.
+
+Camera-open harness (optional; camera must be plugged in). Prints `backend=` and
+`elapsed_ms` to the first non-black frame:
+
+```bat
+cd src-tauri
+cargo run --example open-by-name -- ocal4 1280 720 MJPG 1 30
+```
+
 Release installer (NSIS):
 
 ```bat
