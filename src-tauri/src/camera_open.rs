@@ -85,11 +85,40 @@ pub fn warmup_read_tries(backend: &str, width: i32, height: i32) -> u32 {
 }
 
 /// Cold open prefers DirectShow (UI modes come from DSHOW enum). Cached success wins.
-pub fn preferred_backend_for_open(cached: Option<&SuccessfulOpen>) -> &str {
-    cached
-        .map(|success| success.backend.as_str())
-        .filter(|backend| !backend.trim().is_empty())
-        .unwrap_or("DSHOW")
+/// `OPENCV-MSMF` / `OPENCV-DSHOW` cache entries map back to the native family name.
+pub fn preferred_backend_for_open(cached: Option<&SuccessfulOpen>) -> &'static str {
+    let Some(success) = cached else {
+        return "DSHOW";
+    };
+    let backend = success.backend.trim();
+    if backend.is_empty() {
+        return "DSHOW";
+    }
+    let core = backend
+        .strip_prefix("OPENCV-")
+        .or_else(|| backend.strip_prefix("opencv-"))
+        .unwrap_or(backend);
+    if core.eq_ignore_ascii_case("MSMF") {
+        "MSMF"
+    } else {
+        "DSHOW"
+    }
+}
+
+/// High-level open plan used by `open_capture` (native first, then OpenCV).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenStep {
+    NativeDshow,
+    NativeMsmf,
+    OpenCv,
+}
+
+pub fn open_plan_steps(preferred_backend: &str) -> Vec<OpenStep> {
+    if preferred_backend.eq_ignore_ascii_case("MSMF") {
+        vec![OpenStep::NativeMsmf, OpenStep::NativeDshow, OpenStep::OpenCv]
+    } else {
+        vec![OpenStep::NativeDshow, OpenStep::NativeMsmf, OpenStep::OpenCv]
+    }
 }
 
 fn device_cache_key(device_name: &str) -> String {
@@ -465,27 +494,17 @@ pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
     let deadline = Instant::now() + OPEN_BUDGET;
 
     // Native-first: DSHOW → MSMF, then OpenCV chain.
-    let mut native_order: Vec<&str> = vec!["DSHOW", "MSMF"];
-    if preferred_backend.eq_ignore_ascii_case("MSMF") {
-        native_order = vec!["MSMF", "DSHOW"];
-    }
-
-    for backend in native_order {
-        if open_attempt_timed_out(deadline) {
-            errors.push(format!("{backend}: open budget exhausted"));
+    let plan = open_plan_steps(preferred_backend);
+    for step in plan {
+        if matches!(step, OpenStep::OpenCv) {
             break;
         }
-        let attempt_deadline = {
-            let slice = Instant::now() + ATTEMPT_BUDGET;
-            if slice < deadline {
-                slice
-            } else {
-                deadline
-            }
-        };
-        let _ = attempt_deadline;
-        match backend {
-            "DSHOW" => match crate::native_dshow_capture::NativeDshowCam::open(req) {
+        if open_attempt_timed_out(deadline) {
+            errors.push("native: open budget exhausted".into());
+            break;
+        }
+        match step {
+            OpenStep::NativeDshow => match crate::native_dshow_capture::NativeDshowCam::open(req) {
                 Ok(cam) => {
                     let (width, height) = cam.size();
                     remember_successful_open(
@@ -504,7 +523,7 @@ pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
                 }
                 Err(err) => errors.push(format!("native-DSHOW: {err}")),
             },
-            "MSMF" => {
+            OpenStep::NativeMsmf => {
                 if let Some(msmf_index) = match_device_index(&req.device_name, &msmf_names) {
                     match crate::native_msmf_capture::NativeMsmfCam::open(req, msmf_index) {
                         Ok(cam) => {
@@ -529,13 +548,14 @@ pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
                     errors.push("native-MSMF: name not in MSMF list".into());
                 }
             }
-            _ => {}
+            OpenStep::OpenCv => {}
         }
     }
 
+    let opencv_preferred = preferred_backend;
     let attempts = prioritize_backend_attempts(
         open_attempts_for_mode(req, &msmf_names),
-        Some(preferred_backend),
+        Some(opencv_preferred),
     );
     let codecs = prioritize_fourcc_attempts(
         fourcc_attempts(&req.fourcc),
