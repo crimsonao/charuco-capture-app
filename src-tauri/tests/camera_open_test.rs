@@ -15,6 +15,7 @@ fn ocal4_720p_yuy2() -> OpenRequest {
         width: 1280,
         height: 720,
         fourcc: "YUY2".into(),
+        fps: 30,
     }
 }
 

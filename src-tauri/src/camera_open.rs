@@ -42,6 +42,7 @@ const CAP_MSMF: i32 = 1400;
 const CAP_DSHOW: i32 = 700;
 const CAP_PROP_FRAME_WIDTH: i32 = 3;
 const CAP_PROP_FRAME_HEIGHT: i32 = 4;
+const CAP_PROP_FPS: i32 = 5;
 const CAP_PROP_FOURCC: i32 = 6;
 const CAP_PROP_BUFFERSIZE: i32 = 38;
 
@@ -52,6 +53,7 @@ pub struct OpenRequest {
     pub width: i32,
     pub height: i32,
     pub fourcc: String,
+    pub fps: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -551,6 +553,9 @@ fn try_open_backend_until(
         }
         cvcam_set(capture.ptr, CAP_PROP_FRAME_WIDTH, f64::from(req.width));
         cvcam_set(capture.ptr, CAP_PROP_FRAME_HEIGHT, f64::from(req.height));
+        if req.fps > 0 {
+            cvcam_set(capture.ptr, CAP_PROP_FPS, f64::from(req.fps));
+        }
     }
 
     let tries = warmup_read_tries(backend, req.width, req.height);
@@ -881,6 +886,7 @@ mod timeout_tests {
             width: 1280,
             height: 720,
             fourcc: "YUY2".into(),
+            fps: 30,
         }
     }
 
