@@ -3,6 +3,7 @@
 //! Never call `VideoCapture(dshow_index, CAP_MSMF)`. DirectShow order is not
 //! the MSMF order; that mistake opens the laptop camera when ocal4 is selected.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -22,8 +23,14 @@ use crate::session::{resolve_out_root, SessionConfig};
 const BLACK_MEAN: f64 = 4.0;
 const MIN_FRAME_EDGE: i32 = 16;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(50);
-const OPEN_TIMEOUT: Duration = Duration::from_secs(8);
+/// Shared budget for the whole open_capture attempt chain (all backends × codecs).
+const OPEN_BUDGET: Duration = Duration::from_secs(10);
 const JPEG_QUALITY: i32 = 80;
+
+/// Last backend + FOURCC that successfully opened a device (keyed by lowercased name).
+static LAST_SUCCESS: Mutex<Option<HashMap<String, SuccessfulOpen>>> = Mutex::new(None);
+/// MSMF friendly names cached after list/prefetch so open need not re-enumerate.
+static MSMF_NAMES_CACHE: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
 /// User-visible hint when consecutive read failures stop the preview loop.
 pub const CAMERA_DISCONNECT_HINT: &str = "摄像头断开";
@@ -48,6 +55,122 @@ pub struct OpenRequest {
 pub struct OpenAttempt {
     pub backend: &'static str,
     pub index: i32,
+}
+
+/// Remembered open path for a device (backend + FOURCC that worked).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuccessfulOpen {
+    pub backend: String,
+    pub fourcc: String,
+}
+
+/// Total time budget for opening (shared across all backend/codec tries).
+pub fn open_budget() -> Duration {
+    OPEN_BUDGET
+}
+
+/// Warmup `read` attempts before giving up on a backend/codec try.
+pub fn warmup_read_tries(backend: &str, width: i32, height: i32) -> u32 {
+    let mut tries = if backend == "MSMF" { 4 } else { 3 };
+    if width.saturating_mul(height) >= 1920 * 1080 {
+        tries += 2;
+    }
+    tries
+}
+
+fn device_cache_key(device_name: &str) -> String {
+    device_name.trim().to_ascii_lowercase()
+}
+
+pub fn remember_successful_open(device_name: &str, success: &SuccessfulOpen) {
+    let key = device_cache_key(device_name);
+    if key.is_empty() {
+        return;
+    }
+    let mut guard = LAST_SUCCESS.lock().unwrap_or_else(|err| err.into_inner());
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(key, success.clone());
+}
+
+pub fn last_successful_open(device_name: &str) -> Option<SuccessfulOpen> {
+    let key = device_cache_key(device_name);
+    if key.is_empty() {
+        return None;
+    }
+    let guard = LAST_SUCCESS.lock().unwrap_or_else(|err| err.into_inner());
+    guard.as_ref()?.get(&key).cloned()
+}
+
+pub fn clear_open_success_cache() {
+    let mut guard = LAST_SUCCESS.lock().unwrap_or_else(|err| err.into_inner());
+    *guard = None;
+}
+
+pub fn cache_msmf_names(names: Vec<String>) {
+    let mut guard = MSMF_NAMES_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+    *guard = Some(names);
+}
+
+pub fn clear_msmf_names_cache() {
+    let mut guard = MSMF_NAMES_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+    *guard = None;
+}
+
+/// Prefer cached MSMF names; on miss, enumerate and store.
+pub fn msmf_names_for_open() -> Vec<String> {
+    {
+        let guard = MSMF_NAMES_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(names) = guard.as_ref() {
+            return names.clone();
+        }
+    }
+    match list_msmf_names() {
+        Ok(names) => {
+            cache_msmf_names(names.clone());
+            names
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Move a preferred backend to the front when present.
+pub fn prioritize_backend_attempts(
+    mut attempts: Vec<OpenAttempt>,
+    preferred_backend: Option<&str>,
+) -> Vec<OpenAttempt> {
+    let Some(preferred) = preferred_backend.map(str::trim).filter(|s| !s.is_empty()) else {
+        return attempts;
+    };
+    if let Some(index) = attempts
+        .iter()
+        .position(|attempt| attempt.backend.eq_ignore_ascii_case(preferred))
+    {
+        let chosen = attempts.remove(index);
+        attempts.insert(0, chosen);
+    }
+    attempts
+}
+
+/// Move a preferred FOURCC to the front when present.
+pub fn prioritize_fourcc_attempts(
+    mut codecs: Vec<String>,
+    preferred_fourcc: Option<&str>,
+) -> Vec<String> {
+    let Some(preferred) = preferred_fourcc.map(|s| normalize_fourcc(s)) else {
+        return codecs;
+    };
+    if preferred == "auto" {
+        return codecs;
+    }
+    if let Some(index) = codecs
+        .iter()
+        .position(|codec| codec.eq_ignore_ascii_case(&preferred))
+    {
+        let chosen = codecs.remove(index);
+        codecs.insert(0, chosen);
+    }
+    codecs
 }
 
 pub struct OpenedCam {
@@ -315,12 +438,38 @@ unsafe fn list_msmf_names_com() -> Result<Vec<String>, String> {
 
 /// Open the selected device only. Does not fall through to another camera.
 pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
-    let msmf_names = list_msmf_names().unwrap_or_default();
+    let msmf_names = msmf_names_for_open();
+    let preferred = last_successful_open(&req.device_name);
+    let attempts = prioritize_backend_attempts(
+        open_attempts_for_mode(req, &msmf_names),
+        preferred.as_ref().map(|p| p.backend.as_str()),
+    );
+    let codecs = prioritize_fourcc_attempts(
+        fourcc_attempts(&req.fourcc),
+        preferred.as_ref().map(|p| p.fourcc.as_str()),
+    );
+    let deadline = Instant::now() + OPEN_BUDGET;
     let mut errors = Vec::new();
-    for attempt in open_attempts_for_mode(req, &msmf_names) {
-        for codec in fourcc_attempts(&req.fourcc) {
-            match try_open_backend(attempt.backend, attempt.index, req, &codec) {
-                Ok(opened) => return Ok(opened),
+    'open: for attempt in attempts {
+        for codec in &codecs {
+            if open_attempt_timed_out(deadline) {
+                errors.push(format!(
+                    "{}/{}: open budget exhausted",
+                    attempt.backend, codec
+                ));
+                break 'open;
+            }
+            match try_open_backend_until(attempt.backend, attempt.index, req, codec, deadline) {
+                Ok(opened) => {
+                    remember_successful_open(
+                        &req.device_name,
+                        &SuccessfulOpen {
+                            backend: opened.backend.clone(),
+                            fourcc: codec.clone(),
+                        },
+                    );
+                    return Ok(opened);
+                }
                 Err(err) => errors.push(err),
             }
         }
@@ -344,15 +493,6 @@ pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
 /// or DSHOW try.
 pub fn open_attempt_timed_out(deadline: Instant) -> bool {
     Instant::now() >= deadline
-}
-
-fn try_open_backend(
-    backend: &str,
-    index: i32,
-    req: &OpenRequest,
-    codec: &str,
-) -> Result<OpenedCam, String> {
-    try_open_backend_until(backend, index, req, codec, Instant::now() + OPEN_TIMEOUT)
 }
 
 fn try_open_backend_until(
@@ -387,10 +527,7 @@ fn try_open_backend_until(
         cvcam_set(capture.ptr, CAP_PROP_FRAME_HEIGHT, f64::from(req.height));
     }
 
-    let mut tries = if backend == "MSMF" { 12 } else { 5 };
-    if req.width.saturating_mul(req.height) >= 1920 * 1080 {
-        tries += 4;
-    }
+    let tries = warmup_read_tries(backend, req.width, req.height);
 
     let mut last_width = 0i32;
     let mut last_height = 0i32;

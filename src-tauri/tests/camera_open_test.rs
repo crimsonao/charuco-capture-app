@@ -1,8 +1,11 @@
 use std::time::{Duration, Instant};
 
 use charuco_capture_app_lib::camera::{
-    fourcc_attempts, fourcc_u32, frame_has_image, list_msmf_names, match_device_index,
-    open_attempt_timed_out, open_attempts_for_mode, OpenRequest,
+    cache_msmf_names, clear_msmf_names_cache, clear_open_success_cache, fourcc_attempts,
+    fourcc_u32, frame_has_image, last_successful_open, list_msmf_names, match_device_index,
+    msmf_names_for_open, open_attempt_timed_out, open_attempts_for_mode, open_budget,
+    prioritize_backend_attempts, prioritize_fourcc_attempts, remember_successful_open,
+    warmup_read_tries, OpenRequest, SuccessfulOpen,
 };
 
 fn ocal4_720p_yuy2() -> OpenRequest {
@@ -145,4 +148,58 @@ fn prepare_preview_session_accepts_default_board() {
     let config = prepare_preview_session(None).expect("default 20/15 mm board");
     assert_eq!(config.square_mm, 20.0);
     assert_eq!(config.marker_mm, 15.0);
+}
+
+#[test]
+fn open_budget_is_shared_across_attempts() {
+    assert_eq!(open_budget(), Duration::from_secs(10));
+}
+
+#[test]
+fn warmup_read_tries_are_reduced() {
+    assert_eq!(warmup_read_tries("MSMF", 1280, 720), 4);
+    assert_eq!(warmup_read_tries("DSHOW", 1280, 720), 3);
+    assert_eq!(warmup_read_tries("MSMF", 1920, 1080), 6);
+    assert_eq!(warmup_read_tries("DSHOW", 1920, 1080), 5);
+}
+
+#[test]
+fn prioritize_backend_puts_preferred_first() {
+    let req = ocal4_720p_yuy2();
+    let msmf_names = vec!["ocal4".into(), "Integrated Webcam".into()];
+    let attempts = open_attempts_for_mode(&req, &msmf_names);
+    let ordered = prioritize_backend_attempts(attempts, Some("DSHOW"));
+    assert_eq!(ordered[0].backend, "DSHOW");
+    assert_eq!(ordered[1].backend, "MSMF");
+}
+
+#[test]
+fn prioritize_fourcc_puts_preferred_first() {
+    let ordered = prioritize_fourcc_attempts(fourcc_attempts("YUY2"), Some("MJPG"));
+    assert_eq!(ordered, vec!["MJPG".to_string(), "YUY2".to_string()]);
+}
+
+#[test]
+fn remember_successful_open_is_recalled_by_device_name() {
+    clear_open_success_cache();
+    remember_successful_open(
+        "ocal4",
+        &SuccessfulOpen {
+            backend: "DSHOW".into(),
+            fourcc: "MJPG".into(),
+        },
+    );
+    let recalled = last_successful_open("OCAL4").expect("cached success");
+    assert_eq!(recalled.backend, "DSHOW");
+    assert_eq!(recalled.fourcc, "MJPG");
+    clear_open_success_cache();
+}
+
+#[test]
+fn msmf_names_for_open_reuses_cache() {
+    clear_msmf_names_cache();
+    cache_msmf_names(vec!["cached-cam".into()]);
+    let names = msmf_names_for_open();
+    assert_eq!(names, vec!["cached-cam".to_string()]);
+    clear_msmf_names_cache();
 }

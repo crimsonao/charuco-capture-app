@@ -7,9 +7,12 @@
 use std::collections::HashSet;
 
 pub use crate::camera_open::{
-    fourcc_attempts, fourcc_u32, frame_has_image, frame_mean, list_msmf_names, match_device_index,
-    open_attempt_timed_out, open_attempts_for_mode, open_capture, OpenAttempt, OpenRequest,
-    OpenedCam,
+    cache_msmf_names, clear_msmf_names_cache, clear_open_success_cache, fourcc_attempts,
+    fourcc_u32, frame_has_image, frame_mean, last_successful_open, list_msmf_names,
+    match_device_index, msmf_names_for_open, open_attempt_timed_out, open_attempts_for_mode,
+    open_budget, open_capture, prioritize_backend_attempts, prioritize_fourcc_attempts,
+    remember_successful_open, warmup_read_tries, OpenAttempt, OpenRequest, OpenedCam,
+    SuccessfulOpen,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -129,7 +132,19 @@ pub fn collect_discrete_modes(slots: &[StreamCapSlot]) -> Vec<(i32, i32, String)
 
 #[tauri::command]
 pub fn list_cameras() -> Result<Vec<CameraMode>, String> {
-    list_dshow_modes()
+    // Prefetch MSMF names while DirectShow enumerates so start_preview can skip a second enum.
+    let msmf_prefetch = std::thread::Builder::new()
+        .name("msmf-prefetch".into())
+        .spawn(|| {
+            if let Ok(names) = list_msmf_names() {
+                cache_msmf_names(names);
+            }
+        });
+    let result = list_dshow_modes();
+    if let Ok(handle) = msmf_prefetch {
+        let _ = handle.join();
+    }
+    result
 }
 
 pub fn list_dshow_modes() -> Result<Vec<CameraMode>, String> {
