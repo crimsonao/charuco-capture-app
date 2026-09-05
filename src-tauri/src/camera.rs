@@ -10,9 +10,9 @@ pub use crate::camera_open::{
     cache_msmf_names, clear_msmf_names_cache, clear_open_success_cache, fourcc_attempts,
     fourcc_u32, frame_has_image, frame_mean, last_successful_open, list_msmf_names,
     match_device_index, msmf_names_for_open, open_attempt_timed_out, open_attempts_for_mode,
-    open_budget, open_capture, prioritize_backend_attempts, prioritize_fourcc_attempts,
-    remember_successful_open, warmup_read_tries, OpenAttempt, OpenRequest, OpenedCam,
-    SuccessfulOpen,
+    open_budget, open_capture, preferred_backend_for_open, prioritize_backend_attempts,
+    prioritize_fourcc_attempts, remember_successful_open, warmup_read_tries, OpenAttempt,
+    OpenRequest, OpenedCam, SuccessfulOpen,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]

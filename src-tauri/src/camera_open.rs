@@ -25,6 +25,9 @@ const MIN_FRAME_EDGE: i32 = 16;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(50);
 /// Shared budget for the whole open_capture attempt chain (all backends × codecs).
 const OPEN_BUDGET: Duration = Duration::from_secs(10);
+/// Cap a single backend/codec try so a slow MSMF open cannot burn the whole budget
+/// before DirectShow is attempted (deadline is checked around blocking OpenCV calls).
+const ATTEMPT_BUDGET: Duration = Duration::from_secs(3);
 const JPEG_QUALITY: i32 = 80;
 
 /// Last backend + FOURCC that successfully opened a device (keyed by lowercased name).
@@ -71,11 +74,20 @@ pub fn open_budget() -> Duration {
 
 /// Warmup `read` attempts before giving up on a backend/codec try.
 pub fn warmup_read_tries(backend: &str, width: i32, height: i32) -> u32 {
-    let mut tries = if backend == "MSMF" { 4 } else { 3 };
+    let _ = backend;
+    let mut tries = 2;
     if width.saturating_mul(height) >= 1920 * 1080 {
-        tries += 2;
+        tries += 1;
     }
     tries
+}
+
+/// Cold open prefers DirectShow (UI modes come from DSHOW enum). Cached success wins.
+pub fn preferred_backend_for_open(cached: Option<&SuccessfulOpen>) -> &str {
+    cached
+        .map(|success| success.backend.as_str())
+        .filter(|backend| !backend.trim().is_empty())
+        .unwrap_or("DSHOW")
 }
 
 fn device_cache_key(device_name: &str) -> String {
@@ -294,20 +306,20 @@ pub fn match_device_index(device_name: &str, names: &[String]) -> Option<i32> {
     None
 }
 
-/// MSMF by friendly-name index first, then DirectShow by `dshow_index`.
-/// Never pairs MSMF with the DirectShow index.
+/// DirectShow by `dshow_index` first (matches Setup enumeration), then MSMF by
+/// friendly-name index. Never pairs MSMF with the DirectShow index.
 pub fn open_attempts_for_mode(req: &OpenRequest, msmf_names: &[String]) -> Vec<OpenAttempt> {
     let mut attempts = Vec::new();
+    attempts.push(OpenAttempt {
+        backend: "DSHOW",
+        index: req.dshow_index,
+    });
     if let Some(msmf_index) = match_device_index(&req.device_name, msmf_names) {
         attempts.push(OpenAttempt {
             backend: "MSMF",
             index: msmf_index,
         });
     }
-    attempts.push(OpenAttempt {
-        backend: "DSHOW",
-        index: req.dshow_index,
-    });
     attempts
 }
 
@@ -442,7 +454,7 @@ pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
     let preferred = last_successful_open(&req.device_name);
     let attempts = prioritize_backend_attempts(
         open_attempts_for_mode(req, &msmf_names),
-        preferred.as_ref().map(|p| p.backend.as_str()),
+        Some(preferred_backend_for_open(preferred.as_ref())),
     );
     let codecs = prioritize_fourcc_attempts(
         fourcc_attempts(&req.fourcc),
@@ -459,7 +471,21 @@ pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
                 ));
                 break 'open;
             }
-            match try_open_backend_until(attempt.backend, attempt.index, req, codec, deadline) {
+            let attempt_deadline = {
+                let slice = Instant::now() + ATTEMPT_BUDGET;
+                if slice < deadline {
+                    slice
+                } else {
+                    deadline
+                }
+            };
+            match try_open_backend_until(
+                attempt.backend,
+                attempt.index,
+                req,
+                codec,
+                attempt_deadline,
+            ) {
                 Ok(opened) => {
                     remember_successful_open(
                         &req.device_name,

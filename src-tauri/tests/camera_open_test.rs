@@ -4,8 +4,8 @@ use charuco_capture_app_lib::camera::{
     cache_msmf_names, clear_msmf_names_cache, clear_open_success_cache, fourcc_attempts,
     fourcc_u32, frame_has_image, last_successful_open, list_msmf_names, match_device_index,
     msmf_names_for_open, open_attempt_timed_out, open_attempts_for_mode, open_budget,
-    prioritize_backend_attempts, prioritize_fourcc_attempts, remember_successful_open,
-    warmup_read_tries, OpenRequest, SuccessfulOpen,
+    preferred_backend_for_open, prioritize_backend_attempts, prioritize_fourcc_attempts,
+    remember_successful_open, warmup_read_tries, OpenRequest, SuccessfulOpen,
 };
 
 fn ocal4_720p_yuy2() -> OpenRequest {
@@ -53,10 +53,10 @@ fn open_attempts_msmf_by_friendly_name_then_dshow_index() {
     let msmf_names = vec!["ocal4".into(), "Integrated Webcam".into()];
     let attempts = open_attempts_for_mode(&req, &msmf_names);
     assert_eq!(attempts.len(), 2);
-    assert_eq!(attempts[0].backend, "MSMF");
-    assert_eq!(attempts[0].index, 0);
-    assert_eq!(attempts[1].backend, "DSHOW");
-    assert_eq!(attempts[1].index, 1);
+    assert_eq!(attempts[0].backend, "DSHOW");
+    assert_eq!(attempts[0].index, 1);
+    assert_eq!(attempts[1].backend, "MSMF");
+    assert_eq!(attempts[1].index, 0);
     assert!(
         attempts
             .iter()
@@ -156,11 +156,23 @@ fn open_budget_is_shared_across_attempts() {
 }
 
 #[test]
+fn preferred_backend_defaults_to_dshow() {
+    assert_eq!(preferred_backend_for_open(None), "DSHOW");
+    assert_eq!(
+        preferred_backend_for_open(Some(&SuccessfulOpen {
+            backend: "MSMF".into(),
+            fourcc: "MJPG".into(),
+        })),
+        "MSMF"
+    );
+}
+
+#[test]
 fn warmup_read_tries_are_reduced() {
-    assert_eq!(warmup_read_tries("MSMF", 1280, 720), 4);
-    assert_eq!(warmup_read_tries("DSHOW", 1280, 720), 3);
-    assert_eq!(warmup_read_tries("MSMF", 1920, 1080), 6);
-    assert_eq!(warmup_read_tries("DSHOW", 1920, 1080), 5);
+    assert_eq!(warmup_read_tries("MSMF", 1280, 720), 2);
+    assert_eq!(warmup_read_tries("DSHOW", 1280, 720), 2);
+    assert_eq!(warmup_read_tries("MSMF", 1920, 1080), 3);
+    assert_eq!(warmup_read_tries("DSHOW", 1920, 1080), 3);
 }
 
 #[test]
@@ -168,9 +180,9 @@ fn prioritize_backend_puts_preferred_first() {
     let req = ocal4_720p_yuy2();
     let msmf_names = vec!["ocal4".into(), "Integrated Webcam".into()];
     let attempts = open_attempts_for_mode(&req, &msmf_names);
-    let ordered = prioritize_backend_attempts(attempts, Some("DSHOW"));
-    assert_eq!(ordered[0].backend, "DSHOW");
-    assert_eq!(ordered[1].backend, "MSMF");
+    let ordered = prioritize_backend_attempts(attempts, Some("MSMF"));
+    assert_eq!(ordered[0].backend, "MSMF");
+    assert_eq!(ordered[1].backend, "DSHOW");
 }
 
 #[test]
