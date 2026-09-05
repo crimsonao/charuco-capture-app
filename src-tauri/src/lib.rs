@@ -5,6 +5,8 @@ pub mod capture_flow;
 pub mod detect;
 pub mod frame_convert;
 pub mod jpeg;
+pub mod native_dshow_capture;
+pub mod native_msmf_capture;
 pub mod score;
 pub mod session;
 

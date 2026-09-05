@@ -196,6 +196,8 @@ pub struct OpenedCam {
 
 enum CaptureBackend {
     OpenCv(CameraHandle),
+    NativeMsmf(crate::native_msmf_capture::NativeMsmfCam),
+    NativeDshow(crate::native_dshow_capture::NativeDshowCam),
 }
 
 pub struct PreviewFrame {
@@ -458,21 +460,92 @@ unsafe fn list_msmf_names_com() -> Result<Vec<String>, String> {
 pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
     let msmf_names = msmf_names_for_open();
     let preferred = last_successful_open(&req.device_name);
+    let preferred_backend = preferred_backend_for_open(preferred.as_ref());
+    let mut errors = Vec::new();
+    let deadline = Instant::now() + OPEN_BUDGET;
+
+    // Native-first: DSHOW → MSMF, then OpenCV chain.
+    let mut native_order: Vec<&str> = vec!["DSHOW", "MSMF"];
+    if preferred_backend.eq_ignore_ascii_case("MSMF") {
+        native_order = vec!["MSMF", "DSHOW"];
+    }
+
+    for backend in native_order {
+        if open_attempt_timed_out(deadline) {
+            errors.push(format!("{backend}: open budget exhausted"));
+            break;
+        }
+        let attempt_deadline = {
+            let slice = Instant::now() + ATTEMPT_BUDGET;
+            if slice < deadline {
+                slice
+            } else {
+                deadline
+            }
+        };
+        let _ = attempt_deadline;
+        match backend {
+            "DSHOW" => match crate::native_dshow_capture::NativeDshowCam::open(req) {
+                Ok(cam) => {
+                    let (width, height) = cam.size();
+                    remember_successful_open(
+                        &req.device_name,
+                        &SuccessfulOpen {
+                            backend: "DSHOW".into(),
+                            fourcc: normalize_fourcc(&req.fourcc),
+                        },
+                    );
+                    return Ok(OpenedCam {
+                        width,
+                        height,
+                        backend: "DSHOW".into(),
+                        backend_impl: CaptureBackend::NativeDshow(cam),
+                    });
+                }
+                Err(err) => errors.push(format!("native-DSHOW: {err}")),
+            },
+            "MSMF" => {
+                if let Some(msmf_index) = match_device_index(&req.device_name, &msmf_names) {
+                    match crate::native_msmf_capture::NativeMsmfCam::open(req, msmf_index) {
+                        Ok(cam) => {
+                            let (width, height) = cam.size();
+                            remember_successful_open(
+                                &req.device_name,
+                                &SuccessfulOpen {
+                                    backend: "MSMF".into(),
+                                    fourcc: normalize_fourcc(&req.fourcc),
+                                },
+                            );
+                            return Ok(OpenedCam {
+                                width,
+                                height,
+                                backend: "MSMF".into(),
+                                backend_impl: CaptureBackend::NativeMsmf(cam),
+                            });
+                        }
+                        Err(err) => errors.push(format!("native-MSMF: {err}")),
+                    }
+                } else {
+                    errors.push("native-MSMF: name not in MSMF list".into());
+                }
+            }
+            _ => {}
+        }
+    }
+
     let attempts = prioritize_backend_attempts(
         open_attempts_for_mode(req, &msmf_names),
-        Some(preferred_backend_for_open(preferred.as_ref())),
+        Some(preferred_backend),
     );
     let codecs = prioritize_fourcc_attempts(
         fourcc_attempts(&req.fourcc),
         preferred.as_ref().map(|p| p.fourcc.as_str()),
     );
-    let deadline = Instant::now() + OPEN_BUDGET;
-    let mut errors = Vec::new();
     'open: for attempt in attempts {
         for codec in &codecs {
             if open_attempt_timed_out(deadline) {
                 errors.push(format!(
-                    "{}/{}: open budget exhausted",
+                    "OPENCV-{}/{}: open budget exhausted",
                     attempt.backend, codec
                 ));
                 break 'open;
@@ -492,7 +565,8 @@ pub fn open_capture(req: &OpenRequest) -> Result<OpenedCam, String> {
                 codec,
                 attempt_deadline,
             ) {
-                Ok(opened) => {
+                Ok(mut opened) => {
+                    opened.backend = format!("OPENCV-{}", opened.backend);
                     remember_successful_open(
                         &req.device_name,
                         &SuccessfulOpen {
@@ -629,6 +703,8 @@ impl OpenedCam {
     pub fn read_frame(&mut self) -> Result<PreviewFrame, String> {
         match &mut self.backend_impl {
             CaptureBackend::OpenCv(capture) => read_preview_frame(capture),
+            CaptureBackend::NativeMsmf(cam) => cam.read_bgr(),
+            CaptureBackend::NativeDshow(cam) => cam.read_bgr(),
         }
     }
 
