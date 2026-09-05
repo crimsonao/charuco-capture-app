@@ -25,10 +25,10 @@ fn main() {
         .flag_if_supported("/EHsc")
         .compile("opencv_capture");
 
+    // Copy DLLs next to the Cargo exe only. Do not write src-tauri/opencv-runtime
+    // here: that directory is watched by `tauri dev` and retriggers rebuilds.
+    // Production staging stays in scripts/stage-opencv-dlls.mjs (beforeBuildCommand).
     let mut dest_dirs = Vec::new();
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        dest_dirs.push(PathBuf::from(manifest_dir).join("opencv-runtime"));
-    }
     if let Ok(out_dir) = std::env::var("OUT_DIR") {
         if let Some(profile_dir) = cargo_profile_dir(Path::new(&out_dir)) {
             dest_dirs.push(profile_dir);
