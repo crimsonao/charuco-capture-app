@@ -6,11 +6,12 @@ import SetupPage from './pages/SetupPage.vue';
 import StartPage from './pages/StartPage.vue';
 
 interface CameraMode {
-  device_name: string;
-  dshow_index: number;
-  width: number;
-  height: number;
-  fourcc: string;
+  device_name: string
+  dshow_index: number
+  width: number
+  height: number
+  fourcc: string
+  fps: number
 }
 
 interface SessionParams {
