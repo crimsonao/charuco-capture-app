@@ -25,7 +25,11 @@ dist-ssr
 
 # Rust
 src-tauri/target/
+src-tauri/gen/
 src-tauri/opencv-runtime/*.dll
+
+# Local agent / SDD scratch (review diffs, briefs)
+.superpowers/
 
 # TDD artifacts
 red-test-output.txt
