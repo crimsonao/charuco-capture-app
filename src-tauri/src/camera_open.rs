@@ -191,7 +191,11 @@ pub struct OpenedCam {
     pub width: i32,
     pub height: i32,
     pub backend: String,
-    capture: CameraHandle,
+    backend_impl: CaptureBackend,
+}
+
+enum CaptureBackend {
+    OpenCv(CameraHandle),
 }
 
 pub struct PreviewFrame {
@@ -577,7 +581,7 @@ fn try_open_backend_until(
                         width: last_width,
                         height: last_height,
                         backend: backend.to_string(),
-                        capture,
+                        backend_impl: CaptureBackend::OpenCv(capture),
                     });
                 }
             }
@@ -623,7 +627,9 @@ fn read_preview_frame(capture: &CameraHandle) -> Result<PreviewFrame, String> {
 
 impl OpenedCam {
     pub fn read_frame(&mut self) -> Result<PreviewFrame, String> {
-        read_preview_frame(&self.capture)
+        match &mut self.backend_impl {
+            CaptureBackend::OpenCv(capture) => read_preview_frame(capture),
+        }
     }
 
     pub fn release(self) {
