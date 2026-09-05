@@ -3,6 +3,7 @@ pub mod camera;
 pub mod camera_open;
 pub mod capture_flow;
 pub mod detect;
+pub mod frame_convert;
 pub mod jpeg;
 pub mod score;
 pub mod session;

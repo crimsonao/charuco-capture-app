@@ -174,6 +174,29 @@ int cvcam_imencode_jpeg(const CvFrame *frame, int quality, unsigned char **out,
   }
 }
 
+int cvcam_imdecode_bgr(const unsigned char *data, int nbytes, CvFrame *out) {
+  if (out == nullptr) {
+    return 0;
+  }
+  out->data = nullptr;
+  out->width = 0;
+  out->height = 0;
+  out->channels = 0;
+  if (data == nullptr || nbytes <= 0) {
+    return 0;
+  }
+  try {
+    std::vector<unsigned char> buf(data, data + nbytes);
+    cv::Mat decoded = cv::imdecode(buf, cv::IMREAD_COLOR);
+    if (decoded.empty()) {
+      return 0;
+    }
+    return copy_mat_to_frame(decoded, out);
+  } catch (...) {
+    return 0;
+  }
+}
+
 double cvcam_laplacian_var(const CvFrame *frame) {
   if (frame == nullptr || frame->data == nullptr || frame->width <= 0 ||
       frame->height <= 0 || frame->channels <= 0) {

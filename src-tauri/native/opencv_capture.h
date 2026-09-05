@@ -21,6 +21,7 @@ void cvcam_frame_free(CvFrame *frame);
 double cvcam_frame_mean(const CvFrame *frame);
 int cvcam_imencode_jpeg(const CvFrame *frame, int quality, unsigned char **out,
                         int *out_len);
+int cvcam_imdecode_bgr(const unsigned char *data, int nbytes, CvFrame *out);
 double cvcam_laplacian_var(const CvFrame *frame);
 void cvcam_bytes_free(unsigned char *ptr);
 void cvcam_release(CvCam *cam);
