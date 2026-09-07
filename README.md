@@ -1,116 +1,122 @@
 # ChArUco Capture
 
-Windows desktop client (Tauri 2 + Vue 3 + Rust) for ChArUco camera calibration.
-Double-click the installed exe; no Python runtime is required.
+Windows desktop client for **ChArUco** camera calibration capture.
 
-Pages: **start → setup → capture → done**. The start page sets the output root
-(default `%USERPROFILE%\Desktop\ChArUcoCapture`). Setup lists cameras and does
-**not** preselect a row; Start capture stays disabled until you click one.
+Built with **Tauri 2**, **Vue 3**, and **Rust**. Install once and double-click the app — no Python runtime, and end users do not need OpenCV on `PATH`.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-lightgrey)](#prerequisites)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
+
+## Features
+
+- Guided flow: **Start → Setup → Capture → Done**
+- Choose an output folder (default: `%USERPROFILE%\Desktop\ChArUcoCapture`)
+- Enumerate DirectShow camera modes (resolution / FOURCC / FPS); nothing is preselected until you click a row
+- Native camera open (DirectShow → Media Foundation → OpenCV `VideoCapture` fallback)
+- Live ChArUco detection preview and autosave of calibration frames
+- On accept: writes `camera.json`, `camera.txt`, and `report.json`
+
+Board defaults match the common Python tooling: **8×6** squares (`DICT_4X4_50`), square **20 mm**, marker **15 mm**.
+
+## Download
+
+If a [GitHub Release](https://github.com/crimsonao/charuco-capture-app/releases) is published, install the NSIS setup (`*-setup.exe`). After install, run `charuco-capture-app.exe` from the install folder.
+
+OpenCV runtime DLLs are bundled next to the executable by the installer.
 
 ## Prerequisites
 
+### End users (installed app)
+
 - Windows 10/11 x64
-- [Rust](https://rustup.rs/) (MSVC toolchain) and [pnpm](https://pnpm.io/)
-- OpenCV **4.12** world build (include + `x64\vc16\lib` + `x64\vc16\bin`)
-- WebView2 (usually already on Windows 11)
+- WebView2 (included on most Windows 11 systems)
+- A USB / built-in camera and a printed ChArUco board
 
-This machine’s OpenCV (override with `OPENCV_DIR`):
+### Developers (build from source)
 
-```
-C:\Users\50429\Desktop\mark\centerExtration\opencv\build
-```
+- Windows 10/11 x64
+- [Rust](https://rustup.rs/) with the **MSVC** toolchain
+- [Node.js](https://nodejs.org/) and [pnpm](https://pnpm.io/)
+- OpenCV **4.12** official **world** build layout:
 
-That directory must contain `include\` and `x64\vc16\`. `build.rs` links
-`opencv_world4120` and compiles `src-tauri/native/opencv_capture.cpp`.
+  ```
+  %OPENCV_DIR%\
+    include\
+    x64\vc16\lib\          (opencv_world4120.lib)
+    x64\vc16\bin\          (opencv_world4120.dll, optional opencv_videoio_ffmpeg*.dll)
+  ```
 
-vcpkg `opencv4[contrib]` is **not** required for this official 4.12 world DLL
-(ArUco/ChArUco live in `objdetect`). See `src-tauri/README.md` if you rebuild
-against OpenCV ≤ 4.6.
+- WebView2
 
-## Copy OpenCV DLLs next to the exe
+`OPENCV_DIR` is **required** for every local build (no machine path is committed).
 
-Runtime needs `opencv_world*.dll` beside the exe (Windows loader). If the
-OpenCV bin folder also has `opencv_videoio*.dll` (this tree has
-`opencv_videoio_ffmpeg4120_64.dll`), that is copied too. Debug
-`opencv_world*d.dll` is skipped.
+Priority:
 
-**Dev / `cargo test`:** `src-tauri/build.rs` copies matching DLLs into the
-Cargo target directory (`src-tauri/target/debug` or `release`).
+1. Process environment `OPENCV_DIR`
+2. Gitignored repo-root `.env` (`OPENCV_DIR=...`) — copy from [`.env.example`](./.env.example)
 
-**Installer:** `pnpm tauri build` runs `scripts/stage-opencv-dlls.mjs`, which
-copies the same DLLs into `src-tauri/opencv-runtime/` (gitignored).
-`src-tauri/tauri.conf.json` bundles them with:
-
-```json
-"resources": {
-  "opencv-runtime/*.dll": "./"
-}
-```
-
-NSIS installs those files into `$INSTDIR` next to `charuco-capture-app.exe`.
-
-Manual copy if you only have the Cargo exe:
-
-```bat
-set OPENCV_DIR=C:\Users\50429\Desktop\mark\centerExtration\opencv\build
-copy "%OPENCV_DIR%\x64\vc16\bin\opencv_world4120.dll" src-tauri\target\release\
-copy "%OPENCV_DIR%\x64\vc16\bin\opencv_videoio_ffmpeg4120_64.dll" src-tauri\target\release\
-```
-
-Or: `node scripts/stage-opencv-dlls.mjs` then copy from `src-tauri/opencv-runtime\`.
+`vcpkg opencv4[contrib]` is **not** required for official OpenCV 4.12 (ArUco/ChArUco live in `objdetect`). Details: [`src-tauri/README.md`](./src-tauri/README.md).
 
 ## Build and run
 
 ```bat
-cd C:\Users\50429\company\charuco-capture-app
+git clone https://github.com/crimsonao/charuco-capture-app.git
+cd charuco-capture-app
 pnpm install
+
+rem Option A: shell
+set OPENCV_DIR=C:\path\to\opencv\build
+
+rem Option B: copy .env.example to .env and edit OPENCV_DIR (gitignored)
 pnpm tauri dev
-```
-
-`pnpm tauri dev` starts the desktop window (`src/main.rs`). Do not put camera harness binaries under `src-tauri/src/bin/` — Cargo would run them instead of the UI.
-
-Camera open uses native DirectShow, then native Media Foundation, then OpenCV
-`VideoCapture` as fallback. Setup lists discrete modes with FPS; Start capture
-requests that FPS on open.
-
-Camera-open harness (optional; camera must be plugged in). Prints `backend=` and
-`elapsed_ms` to the first non-black frame:
-
-```bat
-cd src-tauri
-cargo run --example open-by-name -- ocal4 1280 720 MJPG 1 30
 ```
 
 Release installer (NSIS):
 
 ```bat
-set OPENCV_DIR=C:\Users\50429\Desktop\mark\centerExtration\opencv\build
+set OPENCV_DIR=C:\path\to\opencv\build
 pnpm tauri build
 ```
 
 Outputs:
 
-- Unpackaged exe + DLLs: `src-tauri\target\release\charuco-capture-app.exe`
-- Installer: `src-tauri\target\release\bundle\nsis\`
+| Artifact | Path |
+|----------|------|
+| Unpackaged app + DLLs | `src-tauri\target\release\charuco-capture-app.exe` |
+| NSIS installer | `src-tauri\target\release\bundle\nsis\` |
 
-After install, open the install folder and double-click `charuco-capture-app.exe`.
-Camera listing uses DirectShow; you do not need Python or a system OpenCV install
-on PATH.
+### OpenCV DLLs next to the exe
 
-## Release smoke checklist
+Windows loads `opencv_world*.dll` from the same folder as the exe. Debug `*d.dll` files are skipped.
 
-Do this on a clean Windows machine (no Python, no system OpenCV on PATH) with a
-printed 8×6 `DICT_4X4_50` board and the NSIS-installed exe:
+| Mode | Behavior |
+|------|----------|
+| Dev / `cargo test` | `src-tauri/build.rs` copies matching DLLs into the Cargo target dir |
+| Installer | `scripts/stage-opencv-dlls.mjs` stages DLLs into `src-tauri/opencv-runtime/` (gitignored); Tauri bundles them via `resources` |
 
-1. Camera list includes ocal4 and the laptop camera. Nothing is preselected.
-2. Start capture opens **only** the selected device (never `VideoCapture(dshow_index, CAP_MSMF)`).
-3. Preview detects the printed board; autosave writes `img_*.jpg` only (no mid-session JSON).
-4. After N frames, the last-place JPEG is still on disk (no drop-then-reshoot).
-5. A worse trial does not delete that last-place file; a better trial replaces it on disk.
-6. Meeting the score target writes `camera.json`, `camera.txt`, and `report.json`, then opens the Done page; use Open folder.
+Manual copy (Cargo release only):
 
-Until this checklist is recorded, do not treat the app as a drop-in replacement
-for the Python capture tool.
+```bat
+set OPENCV_DIR=C:\path\to\opencv\build
+copy "%OPENCV_DIR%\x64\vc16\bin\opencv_world4120.dll" src-tauri\target\release\
+copy "%OPENCV_DIR%\x64\vc16\bin\opencv_videoio_ffmpeg4120_64.dll" src-tauri\target\release\
+```
+
+Or run `node scripts/stage-opencv-dlls.mjs` and copy from `src-tauri\opencv-runtime\`.
+
+> **Note:** Do not add extra binaries under `src-tauri/src/bin/` — Cargo may run them instead of the UI entrypoint.
+
+## Optional camera-open harness
+
+With a camera plugged in:
+
+```bat
+cd src-tauri
+cargo run --example open-by-name -- <device-name> 1280 720 MJPG 1 30
+```
+
+Prints `backend=` and `elapsed_ms` to the first non-black frame.
 
 ## Tests
 
@@ -120,4 +126,29 @@ cargo test --test session_test
 cargo test
 ```
 
-Frontend typecheck is part of `pnpm build` (`vue-tsc --noEmit`).
+Frontend typecheck runs as part of `pnpm build` (`vue-tsc --noEmit`).
+
+## Release smoke checklist
+
+On a clean Windows machine (no Python, no system OpenCV on `PATH`), with a printed 8×6 `DICT_4X4_50` board and the NSIS-installed app:
+
+1. Camera list shows expected devices; nothing is preselected.
+2. Start capture opens **only** the selected device.
+3. Preview detects the board; autosave writes `img_*.jpg` only (no mid-session JSON).
+4. After N frames, the last-place JPEG remains on disk.
+5. A worse trial does not delete that file; a better trial replaces it.
+6. Meeting the score target writes `camera.json`, `camera.txt`, and `report.json`, then opens Done; **Open folder** works.
+
+## Project layout
+
+```
+charuco-capture-app/
+├── src/                 # Vue UI (Start / Setup / Capture / Done)
+├── src-tauri/           # Rust + native OpenCV FFI + Tauri
+├── scripts/             # OpenCV DLL staging for the installer
+└── docs/                # Design notes and plans
+```
+
+## License
+
+[MIT](./LICENSE) © 2026 crimsonao / oz

@@ -1,10 +1,10 @@
 # src-tauri OpenCV link
 
-ChArUco detection and camera I/O use a small C++ FFI (`native/opencv_capture.cpp`) compiled by `build.rs` (`cc` crate) and linked against **OpenCV 4.12 `opencv_world4120`**. The Rust `opencv` crate is **not** used: it needs libclang, which is not installed on this machine.
+ChArUco detection and camera I/O use a small C++ FFI (`native/opencv_capture.cpp`) compiled by `build.rs` (`cc` crate) and linked against **OpenCV 4.12 `opencv_world4120`**. The Rust `opencv` crate is **not** used: it needs libclang, which is optional and not required for this layout.
 
 ## Why not `opencv4[contrib]` / the Rust crate
 
-Official OpenCV **4.7+** moved ArUco / ChArUco from contrib into **`objdetect`**. The world DLL at `OPENCV_DIR` already exports:
+Official OpenCV **4.7+** moved ArUco / ChArUco from contrib into **`objdetect`**. A matching world DLL already exports:
 
 - `cv::aruco::ArucoDetector::detectMarkers`
 - `cv::aruco::CharucoDetector::detectBoard` (4.12 replacement for `interpolateCornersCharuco`)
@@ -18,17 +18,18 @@ If you rebuild against an **older** OpenCV (≤ 4.6) whose world DLL has **no** 
 2. Point the Rust `opencv` crate at it with `OPENCV_INCLUDE_PATHS` / `OPENCV_LINK_PATHS` / `OPENCV_LINK_LIBS` (typically `opencv_world4` plus contrib, or the split `opencv_aruco4` lib).
 3. Or keep this FFI and add the contrib include + `opencv_aruco` / contrib world lib in `build.rs`.
 
-## This machine (actual link)
+## Configuration
 
-`build.rs` defaults `OPENCV_DIR` to:
+`OPENCV_DIR` is **required** (no hardcoded machine path in the repo).
 
+Resolution order:
+
+1. Environment variable `OPENCV_DIR`
+2. Repo-root gitignored `.env` line `OPENCV_DIR=...` (see `.env.example`)
+
+```bat
+set OPENCV_DIR=C:\path\to\opencv\build
 ```
-C:\Users\50429\Desktop\mark\centerExtration\opencv\build
-```
-
-Override with the env var `OPENCV_DIR` (the directory that contains `include\` and `x64\vc16\lib\`).
-
-Link steps that actually ran:
 
 | Step | Value |
 | --- | --- |
@@ -47,10 +48,10 @@ present) into `opencv-runtime/` and NSIS copies them **next to the exe**. See
 the repo-root `README.md` for `OPENCV_DIR` and the exact copy commands.
 
 For `cargo test` / `tauri dev`, `build.rs` also copies those DLLs into the
-Cargo target dir. Example PATH fallback:
+Cargo target dir. Optional PATH helper:
 
 ```bat
-set PATH=C:\Users\50429\Desktop\mark\centerExtration\opencv\build\x64\vc16\bin;%PATH%
+set PATH=%OPENCV_DIR%\x64\vc16\bin;%PATH%
 cd src-tauri
 cargo test --test detect_test
 ```
