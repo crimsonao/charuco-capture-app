@@ -11,8 +11,7 @@ use crate::detect::{detect_charuco, sharpness as frame_sharpness, CharucoBoard, 
 use crate::score::{evaluate_frame, SavedFeature};
 use crate::session::{
     can_autosave, delete_image_file, format_grade, image_path_for_json, save_jpeg,
-    session_payload, session_save_error_hint, start_session_dir, write_accepted_json,
-    write_session_json, SessionConfig,
+    session_save_error_hint, start_session_dir, write_accept_artifacts, SessionConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +62,7 @@ impl CaptureFlow {
             allow_overfill: false,
             next_id: 1,
         };
-        let _ = flow.persist(false);
+        let _ = flow.persist();
         flow
     }
 
@@ -75,7 +74,7 @@ impl CaptureFlow {
         if self.accepted {
             return;
         }
-        let _ = self.persist(false);
+        let _ = self.persist();
     }
 
     pub fn process_detected(
@@ -147,7 +146,7 @@ impl CaptureFlow {
                             });
                             self.next_id += 1;
                             self.last_save = Some(now);
-                            if let Err(err) = self.persist(false) {
+                            if let Err(err) = self.persist() {
                                 return (session_save_error_hint(&err), None);
                             }
                             hint = format!(
@@ -278,7 +277,7 @@ impl CaptureFlow {
         match outcome {
             AfterCalib::NeedMore { culled } => {
                 self.phase = CapturePhase::Collecting;
-                if let Err(err) = self.persist(false) {
+                if let Err(err) = self.persist() {
                     return (session_save_error_hint(&err), None);
                 }
                 (
@@ -288,7 +287,7 @@ impl CaptureFlow {
             }
             AfterCalib::Improve => {
                 self.phase = CapturePhase::Improve;
-                if let Err(err) = self.persist(false) {
+                if let Err(err) = self.persist() {
                     return (session_save_error_hint(&err), None);
                 }
                 let score = session_score_of_shots(&self.shots);
@@ -342,7 +341,7 @@ impl CaptureFlow {
         match outcome {
             AfterCalib::NeedMore { culled } => {
                 self.phase = CapturePhase::Collecting;
-                if let Err(err) = self.persist(false) {
+                if let Err(err) = self.persist() {
                     return (session_save_error_hint(&err), None);
                 }
                 (
@@ -352,7 +351,7 @@ impl CaptureFlow {
             }
             AfterCalib::Improve => {
                 self.phase = CapturePhase::Improve;
-                if let Err(err) = self.persist(false) {
+                if let Err(err) = self.persist() {
                     return (session_save_error_hint(&err), None);
                 }
                 let score = session_score_of_shots(&self.shots);
@@ -376,57 +375,34 @@ impl CaptureFlow {
             self.accepted = false;
             return (session_save_error_hint(&err), None);
         };
-        let payload = session_payload(&self.config, &self.shots, true, self.last_calib.as_ref());
-        if let Err(err) = write_session_json(&dir, &payload) {
+        let Some(calib) = self.last_calib.clone() else {
+            let err = "calibration missing".to_string();
             self.dir_error = Some(err.clone());
             self.accepted = false;
-            let fallback = session_payload(&self.config, &self.shots, false, self.last_calib.as_ref());
-            let _ = write_session_json(&dir, &fallback);
             return (session_save_error_hint(&err), None);
-        }
-        if let Err(err) = write_accepted_json(&dir, &payload) {
+        };
+        if let Err(err) = write_accept_artifacts(&dir, &self.config, &self.shots, &calib) {
             self.dir_error = Some(err.clone());
             self.accepted = false;
-            let fallback = session_payload(&self.config, &self.shots, false, self.last_calib.as_ref());
-            let _ = write_session_json(&dir, &fallback);
             return (session_save_error_hint(&err), None);
         }
         self.accepted = true;
         self.phase = CapturePhase::Collecting;
         let score = session_score_of_shots(&self.shots);
         let mean = crate::calib::mean_reproj_of_shots(&self.shots);
-        let matrix = self
-            .last_calib
-            .as_ref()
-            .map(|calib| calib.camera_matrix)
-            .unwrap_or([[0.0; 3]; 3]);
         let done = SessionDone {
             image_count: self.shots.len(),
             average_percent: score,
             mean_reprojection_error: mean,
-            camera_matrix: matrix,
+            camera_matrix: calib.camera_matrix,
             session_dir: dir.to_string_lossy().into_owned(),
         };
         (format!("{hint} {}", format_grade(score)), Some(done))
     }
 
-    pub fn persist(&mut self, accepted: bool) -> Result<(), String> {
-        let Some(dir) = self.dir.as_ref() else {
-            return Ok(());
-        };
-        let payload = session_payload(
-            &self.config,
-            &self.shots,
-            accepted,
-            self.last_calib.as_ref(),
-        );
-        match write_session_json(dir, &payload) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                self.dir_error = Some(err.clone());
-                Err(err)
-            }
-        }
+    /// Mid-session JSON is not written; JPEGs are the only on-disk progress.
+    pub fn persist(&mut self) -> Result<(), String> {
+        Ok(())
     }
 }
 

@@ -8,9 +8,9 @@ use charuco_capture_app_lib::score::{evaluate_frame, SavedFeature, MIN_SHARPNESS
 use charuco_capture_app_lib::calib::{CalibResult, Shot};
 use charuco_capture_app_lib::camera_open::SessionParams;
 use charuco_capture_app_lib::session::{
-    can_autosave, default_output_root, image_path_for_json, resolve_out_root, save_jpeg,
-    session_json_value, session_payload, session_save_error_hint, sharpness, start_session_dir,
-    start_session_dir_named, write_accepted_json, write_session_json, CapturedImage,
+    can_autosave, camera_json_value, camera_txt_content, default_output_root, image_path_for_json,
+    report_json_value, resolve_out_root, save_jpeg, session_save_error_hint, sharpness,
+    start_session_dir, start_session_dir_named, write_accept_artifacts, CapturedImage,
     SessionConfig, SAVE_COOLDOWN, SAVE_JPEG_QUALITY,
 };
 use serde_json::Value;
@@ -157,7 +157,7 @@ fn session_params_blank_out_root_uses_default() {
 }
 
 #[test]
-fn session_json_uses_python_field_names() {
+fn camera_and_report_json_use_expected_field_names() {
     let config = SessionConfig {
         count_target: 15,
         score_target: 80.0,
@@ -171,20 +171,49 @@ fn session_json_uses_python_field_names() {
         quality: 0.9123,
         diversity: 1.0,
         percent: 87.65,
-        reprojection_error: None,
+        reprojection_error: Some(0.40123),
         feature: [0.0; 6],
     }];
-    let value = session_json_value(&config, &images, false);
-    assert_eq!(value["countTarget"], 15);
-    assert_eq!(value["scoreTarget"], 80.0);
-    assert!(value.get("averagePercent").is_some());
-    assert!(value["meanReprojectionError"].is_null());
-    assert_eq!(value["accepted"], false);
-    let img = &value["images"][0];
-    assert!(img.get("quality").is_some());
-    assert!(img.get("diversity").is_some());
-    assert!(img.get("percent").is_some());
-    assert!(img["reprojectionError"].is_null());
+    let calib = CalibResult {
+        camera_matrix: [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
+        dist_coeffs: vec![0.1, 0.0, 0.0, 0.0, 0.0],
+        overall_rms: 0.41,
+        per_image: vec![0.40],
+        mean_reproj: 0.40,
+    };
+    let camera = camera_json_value(&config, &images, &calib);
+    assert_eq!(camera["accepted"], true);
+    assert_eq!(camera["scoreTarget"], 80.0);
+    assert_eq!(camera["cameraCalibrationData"]["cameraMatrix"][2][2], 1.0);
+    assert_eq!(camera["cameraCalibrationData"]["distCoeffs"][0], 0.1);
+    assert_eq!(camera["overallReprojectionError"], 0.41);
+    assert!(camera.get("images").is_none());
+
+    let report = report_json_value(&config, &images);
+    assert_eq!(report["scoreTarget"], 80.0);
+    assert!(report.get("averagePercent").is_some());
+    assert_eq!(report["images"][0]["path"], "img_001.jpg");
+    assert_eq!(report["images"][0]["reprojectionError"], 0.4012);
+    assert!(report["images"][0].get("quality").is_none());
+}
+
+#[test]
+fn camera_txt_is_three_matrix_rows_then_five_coeffs() {
+    let calib = CalibResult {
+        camera_matrix: [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
+        dist_coeffs: vec![0.1, -0.2, 0.0, 0.0, 0.3],
+        overall_rms: 0.41,
+        per_image: vec![0.40],
+        mean_reproj: 0.40,
+    };
+    let text = camera_txt_content(&calib).expect("txt");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 8);
+    assert_eq!(lines[0], "500 0.0 320");
+    assert_eq!(lines[1], "0.0 500 240");
+    assert_eq!(lines[2], "0.0 0.0 1.0");
+    assert_eq!(lines[3], "0.1");
+    assert_eq!(lines[7], "0.3");
 }
 
 #[test]
@@ -247,7 +276,7 @@ fn blurry_frame_is_not_saveable() {
 }
 
 #[test]
-fn synthetic_board_save_writes_unmarked_jpeg_and_session_json() {
+fn synthetic_board_save_writes_unmarked_jpeg_only() {
     let root = temp_root("save");
     let dir = start_session_dir_named(&root, "20260903_120000").expect("session dir");
     let board = make_board(DEFAULT_SQUARE_M, DEFAULT_MARKER_M).expect("board");
@@ -277,33 +306,12 @@ fn synthetic_board_save_writes_unmarked_jpeg_and_session_json() {
     assert!(bytes.len() > 100);
     assert_eq!(&bytes[..2], &[0xFF, 0xD8], "JPEG SOI");
     assert_eq!(SAVE_JPEG_QUALITY, 95);
-
-    let config = SessionConfig::default_capture();
-    let abs_path = image_path_for_json(&jpeg_path);
-    let images = vec![CapturedImage {
-        path: abs_path.clone(),
-        n_corners: detected.corners.len(),
-        quality: eval.quality,
-        diversity: eval.diversity,
-        percent: eval.percent,
-        reprojection_error: None,
-        feature: eval.feature,
-    }];
-    write_session_json(&dir, &session_json_value(&config, &images, false)).expect("json");
-    let json_path = dir.join("session.json");
-    assert!(json_path.is_file());
-    let parsed: Value = serde_json::from_str(&std::fs::read_to_string(json_path).unwrap()).unwrap();
-    assert_eq!(parsed["accepted"], false);
-    assert_eq!(parsed["countTarget"], 15);
-    assert_eq!(parsed["scoreTarget"], 80.0);
-    assert_eq!(parsed["images"][0]["reprojectionError"], Value::Null);
-    let stored_path = parsed["images"][0]["path"].as_str().expect("path str");
-    assert_eq!(stored_path, abs_path);
-    assert!(std::path::Path::new(stored_path).is_absolute(), "{stored_path}");
+    assert!(!dir.join("session.json").is_file());
+    assert!(!dir.join("camera.json").is_file());
 }
 
 #[test]
-fn accepted_json_copies_session_with_camera_matrix() {
+fn write_accept_artifacts_writes_camera_and_report_files() {
     let root = temp_root("accepted");
     let dir = start_session_dir_named(&root, "20260903_150000").expect("session dir");
     let config = SessionConfig::default_capture();
@@ -324,13 +332,17 @@ fn accepted_json_copies_session_with_camera_matrix() {
         per_image: vec![0.40],
         mean_reproj: 0.40,
     };
-    let payload = session_payload(&config, &shots, true, Some(&calib));
-    write_session_json(&dir, &payload).expect("session.json");
-    write_accepted_json(&dir, &payload).expect("accepted.json");
-    let accepted: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("accepted.json")).unwrap()).unwrap();
-    assert_eq!(accepted["accepted"], true);
-    assert_eq!(accepted["cameraMatrix"][2][2], 1.0);
-    assert_eq!(accepted["overallReprojectionError"], 0.41);
-    assert_eq!(accepted["distCoeffs"][0], 0.1);
+    write_accept_artifacts(&dir, &config, &shots, &calib).expect("artifacts");
+    let camera: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("camera.json")).unwrap()).unwrap();
+    assert_eq!(camera["accepted"], true);
+    assert_eq!(camera["cameraCalibrationData"]["cameraMatrix"][2][2], 1.0);
+    assert_eq!(camera["overallReprojectionError"], 0.41);
+    assert_eq!(camera["cameraCalibrationData"]["distCoeffs"][0], 0.1);
+    assert!(dir.join("camera.txt").is_file());
+    let report: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["images"][0]["path"], "img_001.jpg");
+    assert!(!dir.join("session.json").is_file());
+    assert!(!dir.join("accepted.json").is_file());
 }

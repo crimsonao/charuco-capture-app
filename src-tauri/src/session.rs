@@ -1,4 +1,4 @@
-//! Autosave unmarked frames and `session.json` before the count target.
+//! Autosave unmarked JPEG frames; write accept artifacts only when session is accepted.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -122,7 +122,7 @@ pub fn session_save_error_hint(err: &str) -> String {
     format!("无法保存：{err}。请检查目录权限")
 }
 
-/// Absolute path for `session.json` `images[].path` (matches Python `str(session.out_dir / name)`).
+/// Absolute path for report `images[].path` (matches Python `str(session.out_dir / name)`).
 pub fn image_path_for_json(path: &Path) -> String {
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
@@ -148,16 +148,97 @@ pub fn save_jpeg(
     Ok(path)
 }
 
-pub fn write_session_json(dir: &Path, payload: &Value) -> Result<(), String> {
-    let path = dir.join("session.json");
+fn write_pretty_json(dir: &Path, name: &str, payload: &Value) -> Result<(), String> {
+    let path = dir.join(name);
     let text = serde_json::to_string_pretty(payload).map_err(|err| err.to_string())?;
-    std::fs::write(&path, text).map_err(|err| format!("write session.json: {err}"))
+    std::fs::write(&path, text).map_err(|err| format!("write {name}: {err}"))
 }
 
-pub fn write_accepted_json(dir: &Path, payload: &Value) -> Result<(), String> {
-    let path = dir.join("accepted.json");
-    let text = serde_json::to_string_pretty(payload).map_err(|err| err.to_string())?;
-    std::fs::write(&path, text).map_err(|err| format!("write accepted.json: {err}"))
+fn remove_accept_artifacts(dir: &Path) {
+    for name in ["camera.json", "camera.txt", "report.json"] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+}
+
+pub fn camera_json_value(
+    config: &SessionConfig,
+    images: &[CapturedImage],
+    calib: &CalibResult,
+) -> Value {
+    let average = average_percent(images);
+    json!({
+        "accepted": true,
+        "averageGrade": letter_grade(average),
+        "averagePercent": round_places(average, 1),
+        "cameraCalibrationData": {
+            "cameraMatrix": calib.camera_matrix,
+            "distCoeffs": calib.dist_coeffs,
+        },
+        "markerMm": config.marker_mm,
+        "meanReprojectionError": mean_reprojection_error(images).map(|e| round_places(e, 4)),
+        "overallReprojectionError": round_places(calib.overall_rms, 4),
+        "scoreTarget": config.score_target,
+        "scoreTargetGrade": letter_grade(config.score_target),
+        "squareMm": config.square_mm,
+    })
+}
+
+pub fn camera_txt_content(calib: &CalibResult) -> Result<String, String> {
+    if calib.dist_coeffs.len() < 5 {
+        return Err(format!(
+            "distCoeffs need at least 5 values, got {}",
+            calib.dist_coeffs.len()
+        ));
+    }
+    let m = calib.camera_matrix;
+    let d = &calib.dist_coeffs;
+    Ok(format!(
+        "{} 0.0 {}\n0.0 {} {}\n0.0 0.0 1.0\n{}\n{}\n{}\n{}\n{}\n",
+        m[0][0], m[0][2], m[1][1], m[1][2], d[0], d[1], d[2], d[3], d[4]
+    ))
+}
+
+pub fn report_json_value(config: &SessionConfig, images: &[CapturedImage]) -> Value {
+    let average = average_percent(images);
+    json!({
+        "averagePercent": round_places(average, 1),
+        "averageGrade": letter_grade(average),
+        "scoreTarget": config.score_target,
+        "images": images.iter().map(|image| json!({
+            "path": image.path,
+            "percent": round_places(image.percent, 1),
+            "grade": letter_grade(image.percent),
+            "reprojectionError": image.reprojection_error.map(|e| round_places(e, 4)),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// Write `camera.json`, `camera.txt`, and `report.json`. On any failure, remove partial writes.
+pub fn write_accept_artifacts(
+    dir: &Path,
+    config: &SessionConfig,
+    shots: &[Shot],
+    calib: &CalibResult,
+) -> Result<(), String> {
+    let images: Vec<CapturedImage> = shots.iter().map(captured_from_shot).collect();
+    let camera_json = camera_json_value(config, &images, calib);
+    let camera_txt = camera_txt_content(calib)?;
+    let report_json = report_json_value(config, &images);
+
+    if let Err(err) = write_pretty_json(dir, "camera.json", &camera_json) {
+        remove_accept_artifacts(dir);
+        return Err(err);
+    }
+    let txt_path = dir.join("camera.txt");
+    if let Err(err) = std::fs::write(&txt_path, camera_txt) {
+        remove_accept_artifacts(dir);
+        return Err(format!("write camera.txt: {err}"));
+    }
+    if let Err(err) = write_pretty_json(dir, "report.json", &report_json) {
+        remove_accept_artifacts(dir);
+        return Err(err);
+    }
+    Ok(())
 }
 
 pub fn delete_image_file(path: &str) {
@@ -181,22 +262,6 @@ pub fn captured_from_shot(shot: &Shot) -> CapturedImage {
         reprojection_error: shot.reproj,
         feature: shot.feature,
     }
-}
-
-pub fn session_payload(
-    config: &SessionConfig,
-    shots: &[Shot],
-    accepted: bool,
-    calib: Option<&CalibResult>,
-) -> Value {
-    let images: Vec<CapturedImage> = shots.iter().map(captured_from_shot).collect();
-    let mut payload = session_json_value(config, &images, accepted);
-    if let Some(calib) = calib {
-        payload["cameraMatrix"] = json!(calib.camera_matrix);
-        payload["distCoeffs"] = json!(calib.dist_coeffs);
-        payload["overallReprojectionError"] = json!(round_places(calib.overall_rms, 4));
-    }
-    payload
 }
 
 pub fn can_autosave(
@@ -257,33 +322,4 @@ fn average_percent(images: &[CapturedImage]) -> f64 {
     let quality = images.iter().map(|image| image.quality).sum::<f64>() / n;
     let diversity = images.iter().map(|image| image.diversity).sum::<f64>() / n;
     session_percent(quality, diversity, mean_reprojection_error(images))
-}
-
-pub fn session_json_value(
-    config: &SessionConfig,
-    images: &[CapturedImage],
-    accepted: bool,
-) -> Value {
-    let average = average_percent(images);
-    json!({
-        "countTarget": config.count_target,
-        "scoreTarget": config.score_target,
-        "scoreTargetGrade": letter_grade(config.score_target),
-        "squareMm": config.square_mm,
-        "markerMm": config.marker_mm,
-        "averagePercent": round_places(average, 1),
-        "averageGrade": letter_grade(average),
-        "meanReprojectionError": mean_reprojection_error(images).map(|e| round_places(e, 4)),
-        "imageCount": images.len(),
-        "images": images.iter().map(|image| json!({
-            "path": image.path,
-            "nCorners": image.n_corners,
-            "quality": round_places(image.quality, 4),
-            "diversity": round_places(image.diversity, 4),
-            "percent": round_places(image.percent, 1),
-            "grade": letter_grade(image.percent),
-            "reprojectionError": image.reprojection_error.map(|e| round_places(e, 4)),
-        })).collect::<Vec<_>>(),
-        "accepted": accepted,
-    })
 }

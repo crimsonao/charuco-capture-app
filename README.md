@@ -104,10 +104,10 @@ printed 8×6 `DICT_4X4_50` board and the NSIS-installed exe:
 
 1. Camera list includes ocal4 and the laptop camera. Nothing is preselected.
 2. Start capture opens **only** the selected device (never `VideoCapture(dshow_index, CAP_MSMF)`).
-3. Preview detects the printed board; autosave writes `img_*.jpg` and `session.json`.
+3. Preview detects the printed board; autosave writes `img_*.jpg` only (no mid-session JSON).
 4. After N frames, the last-place JPEG is still on disk (no drop-then-reshoot).
-5. A worse trial does not delete that last-place file; a better trial replaces it and updates `session.json`.
-6. Meeting the score target writes `accepted.json` and opens the Done page; use Open folder.
+5. A worse trial does not delete that last-place file; a better trial replaces it on disk.
+6. Meeting the score target writes `camera.json`, `camera.txt`, and `report.json`, then opens the Done page; use Open folder.
 
 Until this checklist is recorded, do not treat the app as a drop-in replacement
 for the Python capture tool.

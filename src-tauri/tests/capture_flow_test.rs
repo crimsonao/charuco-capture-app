@@ -93,9 +93,9 @@ fn jpg_names(dir: &Path) -> Vec<String> {
     names
 }
 
-fn read_session_json(dir: &Path) -> Value {
-    serde_json::from_str(&std::fs::read_to_string(dir.join("session.json")).expect("session.json"))
-        .expect("parse session.json")
+fn read_report_json(dir: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(dir.join("report.json")).expect("report.json"))
+        .expect("parse report.json")
 }
 
 fn image_file_names(payload: &Value) -> Vec<String> {
@@ -125,48 +125,44 @@ fn seed_three_shots(flow: &mut CaptureFlow, dir: &Path) {
     flow.phase = CapturePhase::Improve;
     flow.image_size = Some((1280, 720));
     flow.last_calib = Some(calib(vec![0.45, 0.45, 0.80]));
-    flow.persist(false).expect("seed persist");
 }
 
 #[test]
-fn persist_write_failure_sets_hint_and_keeps_accepted_false() {
-    let (mut flow, dir) = start_flow("persist-fail");
-    block_as_directory(&dir.join("session.json"));
-    let err = flow.persist(false).expect_err("json write must fail");
-    assert!(err.contains("session.json"), "{err}");
+fn mid_session_persist_does_not_write_json() {
+    let (mut flow, dir) = start_flow("persist-noop");
+    flow.persist().expect("noop persist");
+    assert!(!dir.join("session.json").is_file());
+    assert!(!dir.join("camera.json").is_file());
+    assert!(!dir.join("report.json").is_file());
     assert!(!flow.accepted);
-    let hint = flow.hint_prefix().expect("user-visible hint");
-    assert!(hint.contains("无法保存"), "{hint}");
-    assert!(hint.contains("检查目录权限"), "{hint}");
-    assert!(!dir.join("accepted.json").is_file());
 }
 
 #[test]
-fn accept_session_json_write_failure_does_not_emit_done() {
+fn accept_session_artifact_write_failure_does_not_emit_done() {
     let (mut flow, dir) = start_flow("accept-session-fail");
     seed_three_shots(&mut flow, &dir);
-    block_as_directory(&dir.join("session.json"));
+    block_as_directory(&dir.join("camera.json"));
     let (hint, done) = flow.accept_session("已达标".into());
-    assert!(done.is_none(), "must not enter Done when json write fails");
+    assert!(done.is_none(), "must not enter Done when artifact write fails");
     assert!(!flow.accepted);
     assert_eq!(flow.phase, CapturePhase::Improve);
     assert!(hint.contains("无法保存"), "{hint}");
     assert!(hint.contains("检查目录权限"), "{hint}");
+    assert!(!dir.join("report.json").is_file());
     assert!(!dir.join("accepted.json").is_file());
 }
 
 #[test]
-fn accept_reverts_session_json_when_accepted_json_fails() {
-    let (mut flow, dir) = start_flow("accept-accepted-fail");
+fn accept_session_rolls_back_partial_artifacts_when_report_fails() {
+    let (mut flow, dir) = start_flow("accept-report-fail");
     seed_three_shots(&mut flow, &dir);
-    block_as_directory(&dir.join("accepted.json"));
+    block_as_directory(&dir.join("report.json"));
     let (hint, done) = flow.accept_session("已达标".into());
     assert!(done.is_none());
     assert!(!flow.accepted);
     assert!(hint.contains("无法保存"), "{hint}");
-    let payload = read_session_json(&dir);
-    assert_eq!(payload["accepted"], false);
-    assert!(!dir.join("accepted.json").is_file());
+    assert!(!dir.join("camera.json").is_file());
+    assert!(!dir.join("camera.txt").is_file());
 }
 
 #[test]
@@ -214,9 +210,23 @@ fn last_place_file_survives_worse_trial_then_replaced_on_better() {
     assert!(!flow.shots.iter().any(|item| item.id == 3));
     assert!(flow.shots.iter().any(|item| item.id == 5));
 
-    let payload = read_session_json(&dir);
-    assert_eq!(payload["accepted"], false);
-    let json_names = image_file_names(&payload);
-    assert!(json_names.contains(&"img_005.jpg".to_string()), "{json_names:?}");
-    assert!(!json_names.contains(&"img_003.jpg".to_string()), "{json_names:?}");
+    assert!(!dir.join("session.json").is_file());
+    assert!(!dir.join("camera.json").is_file());
+    assert!(!dir.join("report.json").is_file());
+}
+
+#[test]
+fn accept_session_writes_camera_txt_and_report() {
+    let (mut flow, dir) = start_flow("accept-ok");
+    seed_three_shots(&mut flow, &dir);
+    let (hint, done) = flow.accept_session("已达标".into());
+    assert!(done.is_some(), "{hint}");
+    assert!(flow.accepted);
+    assert!(dir.join("camera.json").is_file());
+    assert!(dir.join("camera.txt").is_file());
+    assert!(dir.join("report.json").is_file());
+    let report = read_report_json(&dir);
+    let json_names = image_file_names(&report);
+    assert!(json_names.contains(&"img_001.jpg".to_string()), "{json_names:?}");
+    assert_eq!(json_names.len(), 3);
 }
