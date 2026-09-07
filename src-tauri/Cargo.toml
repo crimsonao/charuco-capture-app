@@ -2,7 +2,7 @@
 name = "charuco-capture-app"
 version = "0.1.0"
 description = "ChArUco calibration desktop client"
-authors = ["you"]
+authors = ["oz"]
 edition = "2021"
 default-run = "charuco-capture-app"
 

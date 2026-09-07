@@ -69,6 +69,10 @@ onMounted(async () => {
         开始
       </button>
     </div>
+
+    <footer class="start__footer" aria-label="作者">
+      © oz
+    </footer>
   </main>
 </template>
 
@@ -133,5 +137,11 @@ onMounted(async () => {
   background: #1b6bff;
   border-color: #1b6bff;
   color: #fff;
+}
+
+.start__footer {
+  margin-top: 2.5rem;
+  font-size: 0.8rem;
+  color: #888;
 }
 </style>
